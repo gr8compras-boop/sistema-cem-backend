@@ -148,24 +148,101 @@ def renderizar_svg(geo, p, L, Pcr):
     ]
     return "".join(svg)
 
+import base64
+from fpdf import FPDF
+
+def generar_pdf_1a1(geo, p, L, Pcr):
+    """
+    Genera un PDF tamaño Carta. Auto-escala el dibujo si excede el tamaño del papel.
+    """
+    pdf = FPDF(orientation="landscape", unit="mm", format="letter")
+    pdf.add_page()
+    
+    # --- 1. CÁLCULO DE ESCALA DINÁMICA ---
+    # Ancho máximo disponible en la hoja Carta restando márgenes (279.4 - 40)
+    ancho_maximo_papel = 239.0 
+    ancho_dibujo = geo['total_w']
+    
+    if ancho_dibujo > ancho_maximo_papel:
+        escala = ancho_maximo_papel / ancho_dibujo
+        texto_escala = f"Escala Visual: 1 : {round(1/escala, 1)} (Ajustado a Carta)"
+    else:
+        escala = 1.0
+        texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
+
+    # --- 2. MEMBRETE / CARTUCHO TÉCNICO ---
+    pdf.set_font("helvetica", "B", 14)
+    pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
+    
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, f"Material: {p['nombre']}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Longitud Total (L): {L} mm", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Capacidad (Pcr): {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
+    
+    # Imprimimos la escala calculada en rojo para que resalte
+    pdf.set_text_color(200, 0, 0)
+    pdf.cell(0, 6, texto_escala, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0) # Volver a negro
+    
+    pdf.line(10, 42, 270, 42) # Línea divisoria bajó un poco
+    
+    # --- 3. DIBUJO GEOMÉTRICO ---
+    origen_x = 20
+    origen_y = 55
+    
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.5)
+    
+    # Multiplicamos cada coordenada por el factor de escala
+    puntos_alzado = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['alzado']]
+    pdf.polygon(puntos_alzado, style="D")
+    
+    puntos_ext = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['ext']]
+    puntos_int = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['int']]
+    
+    pdf.polygon(puntos_ext, style="D")
+    pdf.polygon(puntos_int, style="D")
+    
+    # --- 4. EXPORTACIÓN ---
+    pdf_bytes = pdf.output()
+    return base64.b64encode(pdf_bytes).decode('utf-8')
+
 @app.post("/procesar-diseno")
 async def api_cem(req: CadRequest):
-    nums = re.findall(r'\d+', req.voz_completa)
+    voz = req.voz_completa.lower()
+
+    # 1. Identificación y Longitud
+    nums = re.findall(r'\d+', voz)
     longitud = int(nums[0]) if nums else 1000
-    if any(m in req.voz_completa.lower() for m in ["metro", " mts"]): 
+    if any(m in voz for m in ["metro", " mts"]): 
         longitud *= 1000
 
-    material = buscar_material(req.voz_completa)
-    
-    # Ingeniería: Carga Crítica de Euler
-    # $$P_{cr} = \frac{\pi^2 E I}{L^2}$$
+    # --- NOVEDAD: Extracción del Ángulo ---
+    # Busca un número seguido de la palabra "grados" (ej. "45 grados")
+    match_angulo = re.search(r'(\d+)\s*grados', voz)
+    angulo = int(match_angulo.group(1)) if match_angulo else 0
+
+    # 2. Ingeniería de Materiales
+    material = buscar_material(voz)
     L_cm = longitud / 10
     Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
+    pcr_redondo = round(Pcr, 2)
     
-    geo = proyectar_geometria(material, longitud)
+    # 3. Generación Geométrica (NumPy) ¡Ahora con ángulo!
+    geo = proyectar_geometria(material, longitud, angulo)
+    
+    # 4. Generación de Entregables
+    # Les pasamos el ángulo para que lo muestren en el texto
+    svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo)
+    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo)
+    
     return {
         "status": "success",
         "material": material['nombre'],
-        "pcr_kg": round(Pcr, 2),
-        "svg_code": renderizar_svg(geo, material, longitud, round(Pcr, 2))
+        "pcr_kg": pcr_redondo,
+        "punta_larga": geo['punta_larga'],
+        "punta_corta": geo['punta_corta'],
+        "angulo": angulo,
+        "svg_code": svg_final,
+        "pdf_base64": pdf_base64
     }
