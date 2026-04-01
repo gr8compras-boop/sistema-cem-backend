@@ -110,19 +110,39 @@ def buscar_material(texto: str):
     return CATALOGO[match]
 
 # --- MOTOR GEOMÉTRICO (NUMPY) ---
-def proyectar_geometria(p, L):
+def proyectar_geometria(p, L, angulo=0):
     W, H, t = p['ancho'], p['alto'], p['t']
     
-    # Alzado: Rectángulo de longitud L y altura H
-    alzado = np.array([[0, 0], [L, 0], [L, H], [0, H]])
+    # 1. Cálculo del corte angular (Trigonometría)
+    # Convertimos grados a radianes para la función matemática
+    rad = math.radians(angulo)
+    descuento = H * math.tan(rad)
     
-    # Sección: Alineada a la derecha
+    # Aseguramos que el descuento no sea mayor que la pieza entera
+    descuento = min(descuento, L) 
+    
+    # 2. Alzado (Frontal) con transformación de vértices
+    # Vértices: [Inferior-Izq, Inferior-Der, Superior-Der (con corte), Superior-Izq]
+    alzado = np.array([
+        [0, 0], 
+        [L, 0], 
+        [L - descuento, H], 
+        [0, H]
+    ])
+    
+    # 3. Sección (Lateral) - Se mantiene igual
     offset_x = L + 40 
     ext = np.array([[0, 0], [W, 0], [W, H], [0, H]]) + [offset_x, 0]
-    # Hueco interior (sentido horario para path subtraction)
     int_ptr = np.array([[t, t], [t, H-t], [W-t, H-t], [W-t, t]]) + [offset_x, 0]
     
-    return {'alzado': alzado, 'ext': ext, 'int': int_ptr, 'total_w': offset_x + W}
+    return {
+        'alzado': alzado, 
+        'ext': ext, 
+        'int': int_ptr, 
+        'total_w': offset_x + W,
+        'punta_larga': L,
+        'punta_corta': round(L - descuento, 1)
+    }
 
 def renderizar_svg(geo, p, L, Pcr):
     s = MM_TO_PX
