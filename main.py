@@ -144,7 +144,7 @@ def proyectar_geometria(p, L, angulo=0):
         'punta_corta': round(L - descuento, 1)
     }
 
-def renderizar_svg(geo, p, L, Pcr):
+def renderizar_svg(geo, p, L, Pcr, angulo): 
     s = MM_TO_PX
     W_view = (geo['total_w'] + 50) * s
     H_view = (p['alto'] + 100) * s
@@ -155,23 +155,31 @@ def renderizar_svg(geo, p, L, Pcr):
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {W_view} {H_view}">',
         '<style>.line {stroke:#1a1a1a; fill:none; stroke-width:3;} .cota {stroke:red; stroke-width:1.5;} .txt {font-family:monospace; font-size:18px; font-weight:bold;}</style>',
+        
         # Vista de Alzado
         f'<polygon points="{fmt(geo["alzado"])}" class="line"/>',
+        
         # Vista de Sección (Con hueco real)
         f'<path d="M {fmt(geo["ext"])} Z M {fmt(geo["int"])} Z" fill="#d0d0d0" stroke="black" fill-rule="evenodd"/>',
+        
         # Cota de Longitud
         f'<line x1="0" y1="{30*s}" x2="{L*s}" y2="{30*s}" class="cota"/>',
         f'<text x="{(L*s)/2}" y="{24*s}" class="txt" text-anchor="middle" fill="red">{L} mm</text>',
-        # Información de Ingeniería
-        f'<text x="10" y="{H_view-20}" class="txt" fill="#333">PIEZA: {p["nombre"]} | PCR: {Pcr} KG | v4.1.2</text>',
+        
+        # --- Información de Ingeniería con Ángulo y Puntas (DENTRO DE LA LISTA) ---
+        f'<text x="10" y="{H_view-20}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
+        f'<text x="10" y="{H_view-5}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
+        
         '</svg>'
     ]
-    return "".join(svg)
 
+    return "".join(svg)
+    
 import base64
 from fpdf import FPDF
 
-def generar_pdf_1a1(geo, p, L, Pcr):
+# 1. ¡Agregamos 'angulo' a los parámetros!
+def generar_pdf_1a1(geo, p, L, Pcr, angulo):
     """
     Genera un PDF tamaño Carta. Auto-escala el dibujo si excede el tamaño del papel.
     """
@@ -179,7 +187,6 @@ def generar_pdf_1a1(geo, p, L, Pcr):
     pdf.add_page()
     
     # --- 1. CÁLCULO DE ESCALA DINÁMICA ---
-    # Ancho máximo disponible en la hoja Carta restando márgenes (279.4 - 40)
     ancho_maximo_papel = 239.0 
     ancho_dibujo = geo['total_w']
     
@@ -190,30 +197,39 @@ def generar_pdf_1a1(geo, p, L, Pcr):
         escala = 1.0
         texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
 
-    # --- 2. MEMBRETE / CARTUCHO TÉCNICO ---
+    # --- 2. MEMBRETE / CARTUCHO TÉCNICO (Unificado) ---
     pdf.set_font("helvetica", "B", 14)
     pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"Material: {p['nombre']}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Longitud Total (L): {L} mm", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Capacidad (Pcr): {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
+    # Mostramos el material y la resistencia primero
+    pdf.cell(0, 6, f"Material: {p['nombre']} | Capacidad (Pcr): {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
     
-    # Imprimimos la escala calculada en rojo para que resalte
+    # Mostramos las medidas de fabricación (Puntas)
+    pdf.cell(0, 6, f"Longitud Total (Punta Larga): {geo['punta_larga']} mm", new_x="LMARGIN", new_y="NEXT")
+    
+    # Si hay un corte angular, lo destacamos en azul
+    if angulo > 0:
+        pdf.set_text_color(0, 0, 200) # Azul
+        pdf.cell(0, 6, f"Corte a: {angulo} grados | Punta Corta: {geo['punta_corta']} mm", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0) # Volver a negro
+    
+    # Mostramos la escala en rojo al final del membrete
     pdf.set_text_color(200, 0, 0)
     pdf.cell(0, 6, texto_escala, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(0, 0, 0) # Volver a negro
+    pdf.set_text_color(0, 0, 0) 
     
-    pdf.line(10, 42, 270, 42) # Línea divisoria bajó un poco
+    # Bajamos la línea divisoria para que quepa todo el texto
+    pdf.line(10, 48, 270, 48) 
     
     # --- 3. DIBUJO GEOMÉTRICO ---
+    # Bajamos el origen Y para que el dibujo no choque con el texto
     origen_x = 20
-    origen_y = 55
+    origen_y = 60
     
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.5)
     
-    # Multiplicamos cada coordenada por el factor de escala
     puntos_alzado = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['alzado']]
     pdf.polygon(puntos_alzado, style="D")
     
@@ -227,42 +243,4 @@ def generar_pdf_1a1(geo, p, L, Pcr):
     pdf_bytes = pdf.output()
     return base64.b64encode(pdf_bytes).decode('utf-8')
 
-@app.post("/procesar-diseno")
-async def api_cem(req: CadRequest):
-    voz = req.voz_completa.lower()
 
-    # 1. Identificación y Longitud
-    nums = re.findall(r'\d+', voz)
-    longitud = int(nums[0]) if nums else 1000
-    if any(m in voz for m in ["metro", " mts"]): 
-        longitud *= 1000
-
-    # --- NOVEDAD: Extracción del Ángulo ---
-    # Busca un número seguido de la palabra "grados" (ej. "45 grados")
-    match_angulo = re.search(r'(\d+)\s*grados', voz)
-    angulo = int(match_angulo.group(1)) if match_angulo else 0
-
-    # 2. Ingeniería de Materiales
-    material = buscar_material(voz)
-    L_cm = longitud / 10
-    Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
-    pcr_redondo = round(Pcr, 2)
-    
-    # 3. Generación Geométrica (NumPy) ¡Ahora con ángulo!
-    geo = proyectar_geometria(material, longitud, angulo)
-    
-    # 4. Generación de Entregables
-    # Les pasamos el ángulo para que lo muestren en el texto
-    svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo)
-    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo)
-    
-    return {
-        "status": "success",
-        "material": material['nombre'],
-        "pcr_kg": pcr_redondo,
-        "punta_larga": geo['punta_larga'],
-        "punta_corta": geo['punta_corta'],
-        "angulo": angulo,
-        "svg_code": svg_final,
-        "pdf_base64": pdf_base64
-    }
