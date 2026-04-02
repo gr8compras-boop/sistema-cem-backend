@@ -9,6 +9,11 @@ from fpdf import FPDF
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import json
+from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 app = FastAPI(title="Motor CAD Paramétrico CEM v5.1 - Cloud CSV Ligero")
 
@@ -23,6 +28,23 @@ app.add_middleware(
 MM_TO_PX = 3.779527559 
 E_ACERO = 2100000 # kg/cm²
 TRAMO_ESTANDAR = 6000
+
+# --- FASE 2: CONEXIÓN A BASE DE DATOS (FIREBASE) ---
+firebase_creds = os.getenv("FIREBASE_CREDS")
+db = None
+
+if firebase_creds:
+    try:
+        # Cargamos las credenciales desde la variable de entorno en Render
+        cred_dict = json.loads(firebase_creds)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ Memoria CEM: Conectado a Firebase Firestore exitosamente.")
+    except Exception as e:
+        print(f"❌ Error al iniciar Firebase: {e}")
+else:
+    print("⚠️ Aviso: Llave FIREBASE_CREDS no detectada. El servidor operará sin guardar historial.")
 
 # --- NÚCLEO DE DATOS: GOOGLE SHEETS (Vía CSV Público) ---
 URL_HOJA_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9OF20weoXx_tx_JEMiHtcEYYdH5Jg1Nxc_kAOtrgJT2sg30_pKHJWzaAl41VB6na4aRLI6w0KVIQ/pub?gid=0&single=true&output=csv"
@@ -378,7 +400,27 @@ async def api_cem(req: CadRequest):
     }
     
     pdf_base64 = generar_pdf_1a1(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_adaptado)
-    
+
+    # --- MEMORIA DEL TALLER: GUARDAR REGISTRO EN FIREBASE ---
+    if db is not None:
+        try:
+            registro_plano = {
+                "fecha_creacion": datetime.utcnow().isoformat(),
+                "material": material['nombre'],
+                "piezas_totales": len(lista_cortes),
+                "longitud_maxima_mm": longitud_referencia,
+                "angulo_corte": angulo,
+                "diagnostico_seguridad": diag_texto,
+                "carga_critica_kg": pcr_redondo,
+                "tramos_a_comprar": optimizacion['tramos_comprar'],
+                "eficiencia_financiera": optimizacion['eficiencia_porcentaje']
+            }
+            # Guarda el documento en una colección llamada 'historial_planos'
+            db.collection("historial_planos").add(registro_plano)
+            print("💾 Registro guardado en la nube.")
+        except Exception as e:
+            print(f"⚠️ Error al guardar el historial en Firebase: {e}")
+
     return {
         "status": "success",
         "material": material['nombre'],
