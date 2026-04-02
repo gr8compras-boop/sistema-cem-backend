@@ -10,19 +10,15 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import os
-import json
-from datetime import datetime
-import firebase_admin
-from firebase_admin import credentials, firestore
-import os
 from supabase import create_client, Client
 
-# --- CONEXIÓN A SUPABASE (MEMORIA DEL TALLER) ---
-url: str = os.environ.get("https://jrkafqfltlwurazwzxsm.supabase.co")
-key: str = os.environ.get("sb_publishable_Qobkm0ixC7PUxBbwll4CLQ_r0YKXb0X")
-supabase: Client = create_client(url, key) if url and key else None
+# --- SUPABASE CONNECTION (WORKSHOP MEMORY) ---
+# Make sure to set SUPABASE_URL and SUPABASE_KEY in Render's Environment Variables
+sb_url: str = os.environ.get("SUPABASE_URL")
+sb_key: str = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(sb_url, sb_key) if sb_url and sb_key else None
 
-app = FastAPI(title="Motor CAD Paramétrico CEM v5.1 - Cloud CSV Ligero")
+app = FastAPI(title="CEM Parametric CAD Engine v5.1 - Lightweight CSV Cloud")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,94 +27,77 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONSTANTES TÉCNICAS ---
+# --- TECHNICAL CONSTANTS ---
 MM_TO_PX = 3.779527559 
-E_ACERO = 2100000 # kg/cm²
-TRAMO_ESTANDAR = 6000
+STEEL_E = 2100000 # kg/cm²
+STANDARD_LENGTH = 6000
 
-# --- FASE 2: CONEXIÓN A BASE DE DATOS (FIREBASE) ---
-firebase_creds = os.getenv("FIREBASE_CREDS")
-db = None
+# --- DATA CORE: GOOGLE SHEETS (Via Public CSV) ---
+CSV_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9OF20weoXx_tx_JEMiHtcEYYdH5Jg1Nxc_kAOtrgJT2sg30_pKHJWzaAl41VB6na4aRLI6w0KVIQ/pub?gid=0&single=true&output=csv"
 
-if firebase_creds:
+def load_catalog_from_web():
+    """Downloads the catalog from the public Google Sheets CSV link."""
+    print("Connecting to cloud CSV database...")
     try:
-        # Cargamos las credenciales desde la variable de entorno en Render
-        cred_dict = json.loads(firebase_creds)
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ Memoria CEM: Conectado a Firebase Firestore exitosamente.")
-    except Exception as e:
-        print(f"❌ Error al iniciar Firebase: {e}")
-else:
-    print("⚠️ Aviso: Llave FIREBASE_CREDS no detectada. El servidor operará sin guardar historial.")
-
-# --- NÚCLEO DE DATOS: GOOGLE SHEETS (Vía CSV Público) ---
-URL_HOJA_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9OF20weoXx_tx_JEMiHtcEYYdH5Jg1Nxc_kAOtrgJT2sg30_pKHJWzaAl41VB6na4aRLI6w0KVIQ/pub?gid=0&single=true&output=csv"
-
-def cargar_catalogo_desde_web():
-    """Descarga el catálogo desde el enlace público de Google Sheets en formato CSV."""
-    print("Conectando a la base de datos CSV en la nube...")
-    try:
-        response = requests.get(URL_HOJA_CSV)
+        response = requests.get(CSV_SHEET_URL)
         response.raise_for_status() 
         
         f = StringIO(response.text)
-        lector_csv = csv.DictReader(f)
+        csv_reader = csv.DictReader(f)
         
-        nuevo_catalogo = {}
-        for fila in lector_csv:
-            id_perfil = str(fila.get('ID_Perfil', '')).strip()
-            if not id_perfil:
-                continue # Salta filas vacías
+        new_catalog = {}
+        for row in csv_reader:
+            profile_id = str(row.get('ID_Perfil', '')).strip()
+            if not profile_id:
+                continue 
                 
-            nuevo_catalogo[id_perfil] = {
-                'nombre': str(fila.get('Nombre', '')),
-                'I': float(fila.get('Inercia_I', 0)),
-                'ancho': float(fila.get('Ancho_mm', 0)),
-                'alto': float(fila.get('Alto_mm', 0)),
-                't': float(fila.get('Espesor_t', 0)),
-                'tags': [tag.strip().lower() for tag in str(fila.get('Tags', '')).split(",")]
+            new_catalog[profile_id] = {
+                'name': str(row.get('Nombre', '')),
+                'I': float(row.get('Inercia_I', 0)),
+                'width': float(row.get('Ancho_mm', 0)),
+                'height': float(row.get('Alto_mm', 0)),
+                't': float(row.get('Espesor_t', 0)),
+                'tags': [tag.strip().lower() for tag in str(row.get('Tags', '')).split(",")]
             }
-        print(f"✅ Éxito: {len(nuevo_catalogo)} perfiles cargados en memoria RAM.")
-        return nuevo_catalogo
+        print(f"✅ Success: {len(new_catalog)} profiles loaded into RAM.")
+        return new_catalog
         
     except Exception as e:
-        print(f"❌ Error al cargar nube: {e}")
-        # Salvavidas extremo por si falla la red de Render
-        return {'P2214': {'nombre': 'PTR 2x2" Cal 14 (Respaldo)', 'I': 14.50, 'ancho': 50.8, 'alto': 50.8, 't': 1.9, 'tags': ['ptr']}}
+        print(f"❌ Error loading cloud data: {e}")
+        # Extreme fallback if Render network fails
+        return {'P2214': {'name': 'PTR 2x2" Cal 14 (Respaldo)', 'I': 14.50, 'width': 50.8, 'height': 50.8, 't': 1.9, 'tags': ['ptr']}}
 
-# Se ejecuta al encender el servidor en Render
-CATALOGO = cargar_catalogo_desde_web()
+# Executes on Render server startup
+CATALOG = load_catalog_from_web()
 
 class CadRequest(BaseModel):
-    voz_completa: str
+    full_voice: str
 
-# --- FUNCIONES DE LÓGICA Y MANUFACTURA ---
+# --- LOGIC & MANUFACTURING FUNCTIONS ---
 
-def buscar_material(texto: str):
-    texto = texto.lower()
-    match = list(CATALOGO.keys())[0] 
+def search_material(text: str):
+    text = text.lower()
+    match = list(CATALOG.keys())[0] 
     max_score = 0
-    for key, data in CATALOGO.items():
-        score = sum(1 for tag in data['tags'] if tag in texto)
+    for key, data in CATALOG.items():
+        score = sum(1 for tag in data['tags'] if tag in text)
         if score > max_score:
             max_score, match = score, key
-    return CATALOGO[match]
+    return CATALOG[match]
 
-def proyectar_geometria(p, L, angulo=0, grosor_disco=3):
-    W, H, t = p['ancho'], p['alto'], p['t']
+def project_geometry(p, L, angle=0, blade_thickness=3):
+    W, H, t = p['width'], p['height'], p['t']
     
-    rad = math.radians(angulo)
-    descuento = H * math.tan(rad)
-    descuento = min(descuento, L)
+    rad = math.radians(angle)
+    discount = H * math.tan(rad)
+    discount = min(discount, L)
     
-    medida_fabricacion = L + grosor_disco
+    manufacturing_measure = L + blade_thickness
     
-    alzado = np.array([
+    elevation = np.array([
         [0, 0], 
         [L, 0], 
-        [L - descuento, H], 
+        [L - discount, H], 
         [0, H]
     ])
     
@@ -127,311 +106,266 @@ def proyectar_geometria(p, L, angulo=0, grosor_disco=3):
     int_ptr = np.array([[t, t], [t, H-t], [W-t, H-t], [W-t, t]]) + [offset_x, 0]
     
     return {
-        'alzado': alzado, 
+        'elevation': elevation, 
         'ext': ext, 
         'int': int_ptr, 
         'total_w': offset_x + W,
-        'punta_larga': medida_fabricacion, 
-        'punta_corta': round(medida_fabricacion - descuento, 1)
+        'long_tip': manufacturing_measure, 
+        'short_tip': round(manufacturing_measure - discount, 1)
     }
 
-def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
-    tramos_enteros = longitud_total // tramo_estandar
-    resto = longitud_total % tramo_estandar
-    
-    instrucciones = []
-    tramos_a_comprar = tramos_enteros
-    retazo_util = 0
-    
-    if tramos_enteros > 0:
-        instrucciones.append(f"{tramos_enteros} tramo(s) entero(s) de {tramo_estandar} mm (De fábrica)")
-        
-    punta_larga_resto = 0
-    if resto > 0:
-        punta_larga_resto = resto + kerf
-        instrucciones.append(f"1 corte de {punta_larga_resto} mm (Incluye {kerf} mm por el disco)")
-        tramos_a_comprar += 1
-        retazo_util = tramo_estandar - punta_larga_resto
-        
-    return {
-        "tramos_enteros": tramos_enteros,
-        "medida_corte_final": punta_larga_resto,
-        "tramos_comprar": tramos_a_comprar,
-        "retazo": retazo_util,
-        "lista_instrucciones": instrucciones
-    }
-
-def extraer_lista_cortes(voz):
+def extract_cut_list(voice_input):
     """
-    Traduce comandos de voz complejos en una lista de cortes matemáticos.
-    Soporta lenguaje natural (ej. "dos de un metro", "3 piezas de 500").
+    Translates complex voice commands into a mathematical list of cuts.
+    Note: Regex and mapping stay in Spanish to process user input correctly.
     """
-    voz_norm = voz.lower()
+    voice_norm = voice_input.lower()
 
-    # Diccionario para convertir texto a números (clave para comandos de voz)
-    mapa_numeros = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
-                    'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
-                    'ocho': '8', 'nueve': '9', 'diez': '10'}
+    number_map = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
+                  'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
+                  'ocho': '8', 'nueve': '9', 'diez': '10'}
     
-    for palabra, digito in mapa_numeros.items():
-        voz_norm = re.sub(rf'\b{palabra}\b', digito, voz_norm)
+    for word, digit in number_map.items():
+        voice_norm = re.sub(rf'\b{word}\b', digit, voice_norm)
 
-    # Buscamos el patrón: (Cantidad) + (Palabras intermedias) + (Medida) + (Unidad)
-    patron = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)?'
-    coincidencias = re.findall(patron, voz_norm)
+    pattern = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)?'
+    matches = re.findall(pattern, voice_norm)
     
-    lista_cortes = []
+    cut_list = []
     
-    if coincidencias:
-        for cant_str, med_str, unidad in coincidencias:
-            cantidad = int(cant_str)
-            medida = int(med_str)
+    if matches:
+        for qty_str, measure_str, unit in matches:
+            qty = int(qty_str)
+            measure = int(measure_str)
             
-            # Conversión a milímetros (nuestra unidad base en el taller)
-            if unidad.startswith('m') and 'mili' not in unidad and unidad not in ['mm']: 
-                medida *= 1000
-            elif unidad.startswith('c'):
-                medida *= 10
+            if unit.startswith('m') and 'mili' not in unit and unit not in ['mm']: 
+                measure *= 1000
+            elif unit.startswith('c'):
+                measure *= 10
                 
-            lista_cortes.extend([medida] * cantidad)
+            cut_list.extend([measure] * qty)
     else:
-        # Mecanismo de respaldo: Si el usuario habla simple ("un ptr de 2 metros")
-        nums = re.findall(r'\d+', voz_norm)
-        longitud = int(nums[0]) if nums else 1000
-        if any(m in voz_norm for m in ["metro", "mts"]): longitud *= 1000
-        elif any(c in voz_norm for c in ["cm", "centimetro"]): longitud *= 10
-        lista_cortes.append(longitud)
+        nums = re.findall(r'\d+', voice_norm)
+        length = int(nums[0]) if nums else 1000
+        if any(m in voice_norm for m in ["metro", "mts"]): length *= 1000
+        elif any(c in voice_norm for c in ["cm", "centimetro"]): length *= 10
+        cut_list.append(length)
         
-    return lista_cortes
+    return cut_list
 
-def optimizar_cortes_1d(lista_cortes, tramo_estandar=6000, kerf=3):
+def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
-    Algoritmo First Fit Decreasing (FFD) para optimizar el acomodo de múltiples 
-    cortes en tramos estándar, minimizando la merma y maximizando la utilidad.
+    First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
     """
-    # 1. Ordenamos los cortes de mayor a menor longitud
-    cortes_ordenados = sorted(lista_cortes, reverse=True)
-    tramos_utilizados = [] # Lista de listas. Cada sublista es un tramo de 6m
+    sorted_cuts = sorted(cut_list, reverse=True)
+    used_bars = [] 
     
-    for corte_original in cortes_ordenados:
-        # Sumamos el desgaste del disco a cada pieza individual
-        corte_real = corte_original + kerf
-        acomodado = False
+    for original_cut in sorted_cuts:
+        real_cut = original_cut + kerf
+        placed = False
         
-        # 2. Intentamos meter la pieza en los tramos que ya empezamos a cortar
-        for tramo in tramos_utilizados:
-            espacio_ocupado = sum(tramo)
-            if (espacio_ocupado + corte_real) <= tramo_estandar:
-                tramo.append(corte_real)
-                acomodado = True
+        for bar in used_bars:
+            occupied_space = sum(bar)
+            if (occupied_space + real_cut) <= standard_length:
+                bar.append(real_cut)
+                placed = True
                 break
                 
-        # 3. Si la pieza no cabe en los retazos, sacamos un tramo nuevo del inventario
-        if not acomodado:
-            tramos_utilizados.append([corte_real])
+        if not placed:
+            used_bars.append([real_cut])
             
-    # --- REPORTAJE EJECUTIVO DE MATERIALES ---
-    reporte_tramos = []
-    retazo_global = 0
+    bar_reports = []
+    global_scrap = 0
     
-    for i, tramo in enumerate(tramos_utilizados):
-        ocupado = sum(tramo)
-        sobrante = tramo_estandar - ocupado
-        retazo_global += sobrante
-        reporte_tramos.append({
-            "numero_tramo": i + 1,
-            "cortes_asignados": tramo,
-            "sobrante_mm": sobrante
+    for i, bar in enumerate(used_bars):
+        occupied = sum(bar)
+        leftover = standard_length - occupied
+        global_scrap += leftover
+        bar_reports.append({
+            "bar_number": i + 1,
+            "assigned_cuts": bar,
+            "leftover_mm": leftover
         })
         
-    # Calculamos la eficiencia financiera del uso del material
-    total_material_comprado = len(tramos_utilizados) * tramo_estandar
-    suma_cortes_netos = sum(lista_cortes)
-    eficiencia = round((suma_cortes_netos / total_material_comprado) * 100, 1) if total_material_comprado > 0 else 0
+    total_material_bought = len(used_bars) * standard_length
+    net_cuts_sum = sum(cut_list)
+    efficiency = round((net_cuts_sum / total_material_bought) * 100, 1) if total_material_bought > 0 else 0
 
     return {
-        "tramos_comprar": len(tramos_utilizados),
-        "detalle_tramos": reporte_tramos,
-        "retazo_global_mm": retazo_global,
-        "eficiencia_porcentaje": eficiencia
+        "bars_to_buy": len(used_bars),
+        "bar_details": bar_reports,
+        "global_scrap_mm": global_scrap,
+        "efficiency_percent": efficiency
     }
 
-def evaluar_seguridad(Pcr):
-    if Pcr >= 150:
+def evaluate_safety(pcr):
+    if pcr >= 150:
         return "ESTRUCTURAL (Seguro para carga pesada)", (0, 120, 0), "#007800" 
-    elif Pcr >= 50:
+    elif pcr >= 50:
         return "LIGERO (Solo carga secundaria/vista)", (200, 100, 0), "#c86400" 
     else:
         return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" 
 
-# --- MOTORES DE RENDERIZADO (SVG / PDF) ---
+# --- RENDERING ENGINES (SVG / PDF) ---
 
-def renderizar_svg(geo, p, L, Pcr, angulo, diag_texto, diag_hex):
+def render_svg(geo, p, L, pcr, angle, diag_text, diag_hex):
     s = MM_TO_PX
-    H = p['alto']
+    H = p['height']
     
-    carril_superior = 50 * s  
-    carril_inferior = 65 * s  
+    top_lane = 50 * s  
+    bottom_lane = 65 * s  
     
-    W_view = (geo['total_w'] + 50) * s
-    H_view = (H * s) + carril_superior + carril_inferior
+    w_view = (geo['total_w'] + 50) * s
+    h_view = (H * s) + top_lane + bottom_lane
     
-    def fmt(pts): return " ".join([f"{pt[0]*s},{pt[1]*s + carril_superior}" for pt in pts])
+    def fmt(pts): return " ".join([f"{pt[0]*s},{pt[1]*s + top_lane}" for pt in pts])
 
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {W_view} {H_view}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {w_view} {h_view}">',
         '<style>.line {stroke:#1a1a1a; fill:none; stroke-width:3;} .cota {stroke:red; stroke-width:1.5;} .txt {font-family:monospace; font-size:18px; font-weight:bold;}</style>',
-        f'<polygon points="{fmt(geo["alzado"])}" class="line"/>',
+        f'<polygon points="{fmt(geo["elevation"])}" class="line"/>',
         f'<path d="M {fmt(geo["ext"])} Z M {fmt(geo["int"])} Z" fill="#d0d0d0" stroke="black" fill-rule="evenodd"/>',
         f'<line x1="0" y1="{30*s}" x2="{L*s}" y2="{30*s}" class="cota"/>',
         f'<text x="{(L*s)/2}" y="{24*s}" class="txt" text-anchor="middle" fill="red">{L} mm</text>',
-        f'<text x="10" y="{carril_superior + (H*s) + (20*s)}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
-        f'<text x="10" y="{carril_superior + (H*s) + (35*s)}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
-        f'<text x="10" y="{carril_superior + (H*s) + (50*s)}" class="txt" fill="{diag_hex}">ESTADO: {diag_texto} (Soporta: {Pcr} kg)</text>',
+        f'<text x="10" y="{top_lane + (H*s) + (20*s)}" class="txt" fill="#333">PIEZA: {p["name"]} | CORTE: {angle}°</text>',
+        f'<text x="10" y="{top_lane + (H*s) + (35*s)}" class="txt" fill="#000">PUNTA LARGA: {geo["long_tip"]} mm | PUNTA CORTA: {geo["short_tip"]} mm</text>',
+        f'<text x="10" y="{top_lane + (H*s) + (50*s)}" class="txt" fill="{diag_hex}">ESTADO: {diag_text} (Soporta: {pcr} kg)</text>',
         '</svg>'
     ]
     return "".join(svg)
     
-def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
+def generate_1to1_pdf(geo, p, L, pcr, angle, diag_text, diag_rgb, cut_plan):
     pdf = FPDF(orientation="landscape", unit="mm", format="letter")
     pdf.add_page()
     
-    ancho_maximo_papel = 239.0 
-    ancho_dibujo = geo['total_w']
-    H = p['alto']
+    max_paper_width = 239.0 
+    drawing_width = geo['total_w']
+    H = p['height']
     
-    if ancho_dibujo > ancho_maximo_papel:
-        escala = ancho_maximo_papel / ancho_dibujo
-        texto_escala = f"Escala Visual: 1 : {round(1/escala, 1)} (Ajustado a Carta)"
+    if drawing_width > max_paper_width:
+        scale = max_paper_width / drawing_width
+        scale_text = f"Escala Visual: 1 : {round(1/scale, 1)} (Ajustado a Carta)"
     else:
-        escala = 1.0
-        texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
+        scale = 1.0
+        scale_text = "Escala Visual: 1:1 (Medidas Reales)"
 
     pdf.set_font("helvetica", "B", 14)
     pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"Material: {p['nombre']} | Pcr: {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Material: {p['name']} | Pcr: {pcr} kg", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", "B", 10)
     pdf.cell(0, 6, "INSTRUCCIONES DE CORTE (Tramos de 6m):", new_x="LMARGIN", new_y="NEXT", fill=True)
     
     pdf.set_font("helvetica", "", 9)
-    pdf.cell(0, 5, f"Material a comprar: {despiece['tramos_comprar']} tramo(s) estándar.", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, f"Material a comprar: {cut_plan['bars_to_buy']} tramo(s) estándar.", new_x="LMARGIN", new_y="NEXT")
     
-    for inst in despiece['lista_instrucciones']:
+    for inst in cut_plan['instructions_list']:
         pdf.cell(0, 5, f"> {inst}", new_x="LMARGIN", new_y="NEXT")
         
     pdf.set_text_color(0, 120, 0) 
-    pdf.cell(0, 5, f"Retazo útil sobrante: {despiece['retazo']} mm", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, f"Retazo útil sobrante: {cut_plan['global_scrap']} mm", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     
     pdf.set_text_color(*diag_rgb) 
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(0, 6, f"Estatus Estructural: {diag_texto}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Estatus Estructural: {diag_text}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0) 
     
-    altura_linea = pdf.get_y() + 2
-    pdf.line(10, altura_linea, 270, altura_linea) 
+    line_height = pdf.get_y() + 2
+    pdf.line(10, line_height, 270, line_height) 
     
-    origen_x = 20
-    origen_y = altura_linea + 10
+    origin_x = 20
+    origin_y = line_height + 10
     
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.5)
     
-    puntos_alzado = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['alzado']]
-    pdf.polygon(puntos_alzado, style="D")
+    elevation_pts = [((pt[0]*scale) + origin_x, (pt[1]*scale) + origin_y) for pt in geo['elevation']]
+    pdf.polygon(elevation_pts, style="D")
     
-    puntos_ext = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['ext']]
-    puntos_int = [((pt[0]*escala) + origen_x, (pt[1]*escala) + origen_y) for pt in geo['int']]
+    ext_pts = [((pt[0]*scale) + origin_x, (pt[1]*scale) + origin_y) for pt in geo['ext']]
+    int_pts = [((pt[0]*scale) + origin_x, (pt[1]*scale) + origin_y) for pt in geo['int']]
     
-    pdf.polygon(puntos_ext, style="D")
-    pdf.polygon(puntos_int, style="D")
+    pdf.polygon(ext_pts, style="D")
+    pdf.polygon(int_pts, style="D")
     
-    y_cota = origen_y + (H * escala) + 10
+    y_cota = origin_y + (H * scale) + 10
     pdf.set_draw_color(200, 0, 0) 
-    pdf.line(origen_x, y_cota, origen_x + (L * escala), y_cota)
+    pdf.line(origin_x, y_cota, origin_x + (L * scale), y_cota)
     pdf.set_text_color(200, 0, 0)
     pdf.set_font("helvetica", "B", 9)
-    pdf.text(origen_x + ((L * escala) / 2) - 5, y_cota - 2, f"{L} mm")
+    pdf.text(origin_x + ((L * scale) / 2) - 5, y_cota - 2, f"{L} mm")
     
     pdf_bytes = pdf.output()
     return base64.b64encode(pdf_bytes).decode('utf-8')
     
-# --- ENDPOINT PRINCIPAL ---
+# --- MAIN ENDPOINT ---
 @app.post("/procesar-diseno")
-async def api_cem(req: CadRequest):
-    voz = req.voz_completa.lower()
+async def process_design(req: CadRequest):
+    voice_input = req.full_voice.lower()
 
-    # 1. Extracción Multilongitud (El nuevo NLP)
-    lista_cortes = extraer_lista_cortes(voz)
-    
-    # Para la física (Euler) y el dibujo (PDF), tomaremos la pieza más larga como referencia
-    longitud_referencia = max(lista_cortes)
+    cut_list = extract_cut_list(voice_input)
+    ref_length = max(cut_list)
 
-    match_angulo = re.search(r'(\d+)\s*grados', voz)
-    angulo = int(match_angulo.group(1)) if match_angulo else 0
+    match_angle = re.search(r'(\d+)\s*grados', voice_input)
+    angle = int(match_angle.group(1)) if match_angle else 0
 
-    material = buscar_material(voz)
-    L_cm = longitud_referencia / 10
+    material = search_material(voice_input)
+    l_cm = ref_length / 10
     
     try:
-        Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
-        pcr_redondo = round(Pcr, 2)
+        pcr_calc = (math.pi**2 * STEEL_E * material['I']) / (l_cm**2)
+        pcr_round = round(pcr_calc, 2)
     except Exception:
-        pcr_redondo = 0
+        pcr_round = 0
         
-    diag_texto, diag_rgb, diag_hex = evaluar_seguridad(pcr_redondo)
+    diag_text, diag_rgb, diag_hex = evaluate_safety(pcr_round)
     
-    # 2. Geometría Teórica
-    geo = proyectar_geometria(material, longitud_referencia, angulo, grosor_disco=3)
+    geo = project_geometry(material, ref_length, angle, blade_thickness=3)
+    optimization = optimize_1d_cuts(cut_list, standard_length=STANDARD_LENGTH, kerf=3)
+    svg_final = render_svg(geo, material, ref_length, pcr_round, angle, diag_text, diag_hex)
     
-    # 3. ALGORITMO DE OPTIMIZACIÓN INDUSTRIAL (Acomodo de Material)
-    optimizacion = optimizar_cortes_1d(lista_cortes, tramo_estandar=6000, kerf=3)
-    
-    svg_final = renderizar_svg(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_hex)
-    
-    # --- ADAPTADOR PARA EL PDF ---
-    # Traducimos el diccionario del nuevo algoritmo al formato que tu PDF ya sabe imprimir
-    instrucciones_pdf = []
-    for tramo in optimizacion['detalle_tramos']:
-        cortes_str = " + ".join([f"{c}mm" for c in tramo['cortes_asignados']])
-        instrucciones_pdf.append(f"Tramo {tramo['numero_tramo']}: [{cortes_str}] | Sobra: {tramo['sobrante_mm']}mm")
+    # --- PDF ADAPTER ---
+    pdf_instructions = []
+    for bar in optimization['bar_details']:
+        cuts_str = " + ".join([f"{c}mm" for c in bar['assigned_cuts']])
+        pdf_instructions.append(f"Tramo {bar['bar_number']}: [{cuts_str}] | Sobra: {bar['leftover_mm']}mm")
         
-    despiece_adaptado = {
-        "tramos_comprar": optimizacion['tramos_comprar'],
-        "retazo": optimizacion['retazo_global_mm'],
-        "lista_instrucciones": instrucciones_pdf
+    adapted_cut_plan = {
+        "bars_to_buy": optimization['bars_to_buy'],
+        "global_scrap": optimization['global_scrap_mm'],
+        "instructions_list": pdf_instructions
     }
     
-    pdf_base64 = generar_pdf_1a1(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_adaptado)
+    pdf_base64 = generate_1to1_pdf(geo, material, ref_length, pcr_round, angle, diag_text, diag_rgb, adapted_cut_plan)
 
-    # --- MEMORIA DEL TALLER: GUARDADO PROFESIONAL EN SUPABASE ---
+    # --- SUPABASE PROFESSIONAL SAVE ---
     if supabase:
         try:
-            registro = {
-                "material_nombre": material['nombre'],
-                "longitud_mm": longitud_referencia,
-                "angulo_grados": angulo,
-                "pcr_kg": pcr_redondo,
-                "estatus_seguridad": diag_texto,
-                "piezas_totales": len(lista_cortes),
-                "eficiencia_porcentaje": optimizacion['eficiencia_porcentaje']
+            # DB Keys remain in Spanish to match your Supabase SQL Schema
+            db_record = {
+                "material_nombre": material['name'],
+                "longitud_mm": ref_length,
+                "angulo_grados": angle,
+                "pcr_kg": pcr_round,
+                "estatus_seguridad": diag_text,
+                "piezas_totales": len(cut_list),
+                "eficiencia_porcentaje": optimization['efficiency_percent']
             }
-            # Insertamos en la tabla que creamos en el SQL Editor
-            supabase.table("historial_planos").insert(registro).execute()
-            print("💾 Registro guardado en Supabase exitosamente.")
+            supabase.table("historial_planos").insert(db_record).execute()
+            print("💾 Record saved to Supabase successfully.")
         except Exception as e:
-            print(f"⚠️ Error al guardar en Supabase: {e}")
+            print(f"⚠️ Error saving to Supabase: {e}")
 
     return {
         "status": "success",
-        "material": material['nombre'],
-        "piezas_solicitadas": len(lista_cortes),
-        "eficiencia_financiera": f"{optimizacion['eficiencia_porcentaje']}%",
-        "tramos_comprar": optimizacion['tramos_comprar'],
+        "material": material['name'],
+        "pieces_requested": len(cut_list),
+        "financial_efficiency": f"{optimization['efficiency_percent']}%",
+        "bars_to_buy": optimization['bars_to_buy'],
         "svg_code": svg_final,
         "pdf_base64": pdf_base64
     }
