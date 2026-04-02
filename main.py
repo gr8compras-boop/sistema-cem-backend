@@ -110,19 +110,23 @@ def buscar_material(texto: str):
     return CATALOGO[match]
 
 # --- MOTOR GEOMÉTRICO (NUMPY) ---
-def proyectar_geometria(p, L, angulo=0):
+import math
+import numpy as np
+
+def proyectar_geometria(p, L, angulo=0, grosor_disco=3):
+    """
+    Motor geométrico con compensación de corte (Kerf).
+    grosor_disco: Tolerancia en milímetros que consume la herramienta de corte.
+    """
     W, H, t = p['ancho'], p['alto'], p['t']
     
-    # 1. Cálculo del corte angular (Trigonometría)
-    # Convertimos grados a radianes para la función matemática
     rad = math.radians(angulo)
     descuento = H * math.tan(rad)
+    descuento = min(descuento, L)
     
-    # Aseguramos que el descuento no sea mayor que la pieza entera
-    descuento = min(descuento, L) 
+    # --- CONOCIMIENTO EXPERTO: Compensación Kerf ---
+    medida_fabricacion = L + grosor_disco
     
-    # 2. Alzado (Frontal) con transformación de vértices
-    # Vértices: [Inferior-Izq, Inferior-Der, Superior-Der (con corte), Superior-Izq]
     alzado = np.array([
         [0, 0], 
         [L, 0], 
@@ -130,7 +134,6 @@ def proyectar_geometria(p, L, angulo=0):
         [0, H]
     ])
     
-    # 3. Sección (Lateral) - Se mantiene igual
     offset_x = L + 40 
     ext = np.array([[0, 0], [W, 0], [W, H], [0, H]]) + [offset_x, 0]
     int_ptr = np.array([[t, t], [t, H-t], [W-t, H-t], [W-t, t]]) + [offset_x, 0]
@@ -140,8 +143,45 @@ def proyectar_geometria(p, L, angulo=0):
         'ext': ext, 
         'int': int_ptr, 
         'total_w': offset_x + W,
-        'punta_larga': L,
-        'punta_corta': round(L - descuento, 1)
+        'punta_larga': medida_fabricacion, 
+        'punta_corta': round(medida_fabricacion - descuento, 1)
+    }
+
+def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
+    """
+    Calcula cuántos tramos enteros y qué cortes se necesitan para alcanzar
+    una longitud total, considerando el desperdicio del disco de corte (kerf).
+    """
+    # 1. ¿Cuántos tramos completos de 6m necesitamos?
+    tramos_enteros = longitud_total // tramo_estandar
+    
+    # 2. ¿Cuánto falta para completar la medida?
+    resto = longitud_total % tramo_estandar
+    
+    instrucciones = []
+    tramos_a_comprar = tramos_enteros
+    retazo_util = 0
+    
+    # Si hay tramos completos, los anotamos sin aplicar descuento de corte
+    if tramos_enteros > 0:
+        instrucciones.append(f"{tramos_enteros} tramo(s) entero(s) de {tramo_estandar} mm (De fábrica)")
+        
+    # Si sobra un pedazo, a ese SÍ le aplicamos el Kerf (el disco)
+    punta_larga_resto = 0
+    if resto > 0:
+        punta_larga_resto = resto + kerf
+        instrucciones.append(f"1 corte de {punta_larga_resto} mm (Incluye {kerf} mm por el disco)")
+        tramos_a_comprar += 1
+        
+        # Calculamos cuánto nos sobró de ese último tubo que compramos
+        retazo_util = tramo_estandar - punta_larga_resto
+        
+    return {
+        "tramos_enteros": tramos_enteros,
+        "medida_corte_final": punta_larga_resto,
+        "tramos_comprar": tramos_a_comprar,
+        "retazo": retazo_util,
+        "lista_instrucciones": instrucciones
     }
 
 def evaluar_seguridad(Pcr):
@@ -191,7 +231,7 @@ def renderizar_svg(geo, p, L, Pcr, angulo, diag_texto, diag_hex):
     ]
     return "".join(svg)
     
-def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb):
+def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
     pdf = FPDF(orientation="landscape", unit="mm", format="letter")
     pdf.add_page()
     
@@ -208,28 +248,36 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb):
 
     # --- MEMBRETE TÉCNICO ---
     pdf.set_font("helvetica", "B", 14)
-    pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN Y SEGURIDAD", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"Material: {p['nombre']} | Longitud de corte: {geo['punta_larga']} mm", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Material: {p['nombre']} | Pcr: {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
     
-    if angulo > 0:
-        pdf.set_text_color(0, 0, 200)
-        pdf.cell(0, 6, f"Corte a: {angulo} grados | Punta Corta: {geo['punta_corta']} mm", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(0, 0, 0)
-    
-    # --- NUEVO: Alerta de Seguridad ---
-    pdf.set_text_color(*diag_rgb) # Aplica el color del semáforo
+    # --- NUEVO: LISTA DE CORTE Y MATERIALES ---
+    # Ponemos un fondo gris claro para separar esta sección
+    pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(0, 6, f"Evaluación de Ingeniería: {diag_texto} | Pcr: {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(0, 0, 0) # Volver a negro normal
-    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, "INSTRUCCIONES DE CORTE (Tramos de 6m):", new_x="LMARGIN", new_y="NEXT", fill=True)
     
-    pdf.set_text_color(200, 0, 0)
-    pdf.cell(0, 6, texto_escala, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 9)
+    pdf.cell(0, 5, f"Material a comprar: {despiece['tramos_comprar']} tramo(s) estándar.", new_x="LMARGIN", new_y="NEXT")
+    
+    # Imprimimos cada instrucción generada por el algoritmo
+    for inst in despiece['lista_instrucciones']:
+        pdf.cell(0, 5, f"> {inst}", new_x="LMARGIN", new_y="NEXT")
+        
+    # Destacamos el retazo en verde para control de inventario
+    pdf.set_text_color(0, 120, 0) 
+    pdf.cell(0, 5, f"Retazo útil sobrante: {despiece['retazo']} mm", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+    
+    # --- ALERTA DE SEGURIDAD ---
+    pdf.set_text_color(*diag_rgb) 
+    pdf.set_font("helvetica", "B", 10)
+    pdf.cell(0, 6, f"Estatus Estructural: {diag_texto}", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0) 
     
-    # Línea divisoria inteligente (se ajusta a la cantidad de texto)
+    # Línea divisoria dinámica
     altura_linea = pdf.get_y() + 2
     pdf.line(10, altura_linea, 270, altura_linea) 
     
@@ -258,7 +306,7 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb):
     
     pdf_bytes = pdf.output()
     return base64.b64encode(pdf_bytes).decode('utf-8')
-
+    
 @app.post("/procesar-diseno")
 async def api_cem(req: CadRequest):
     voz = req.voz_completa.lower()
@@ -276,23 +324,29 @@ async def api_cem(req: CadRequest):
     Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
     pcr_redondo = round(Pcr, 2)
     
-    # --- EJECUTAR EVALUACIÓN DE SEGURIDAD ---
     diag_texto, diag_rgb, diag_hex = evaluar_seguridad(pcr_redondo)
     
-    geo = proyectar_geometria(material, longitud, angulo)
+    # NÚCLEO DE MANUFACTURA
+    geo = proyectar_geometria(material, longitud, angulo, grosor_disco=3)
     
-    # Pasamos las nuevas variables de diagnóstico
+    # NUEVO: Calculamos el despiece antes de generar el PDF
+    despiece_info = calcular_despiece(longitud, tramo_estandar=6000, kerf=3)
+    
     svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_hex)
-    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_rgb)
+    
+    # Pasamos 'despiece_info' al PDF
+    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_info)
     
     return {
         "status": "success",
         "material": material['nombre'],
         "pcr_kg": pcr_redondo,
-        "seguridad": diag_texto, # Para uso futuro en Stitch si lo deseas
-        "punta_larga": geo['punta_larga'],
-        "punta_corta": geo['punta_corta'],
+        "seguridad": diag_texto,
+        "punta_larga_real": geo['punta_larga'], 
+        "punta_corta_real": geo['punta_corta'], 
         "angulo": angulo,
+        "tramos_comprar": despiece_info['tramos_comprar'],
+        "retazo": despiece_info['retazo'],
         "svg_code": svg_final,
         "pdf_base64": pdf_base64
-    }    
+    }
