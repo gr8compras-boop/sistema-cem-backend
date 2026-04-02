@@ -1,3 +1,7 @@
+import os
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 import numpy as np
 import math
 import re
@@ -7,7 +11,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Motor CAD Paramétrico CEM v5.0 - Industrial")
+app = FastAPI(title="Motor CAD Paramétrico CEM v5.0 - Industrial Cloud")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,17 +23,42 @@ app.add_middleware(
 # --- CONSTANTES TÉCNICAS ---
 MM_TO_PX = 3.779527559 
 E_ACERO = 2100000 # kg/cm²
+TRAMO_ESTANDAR = 6000
 
-CATALOGO = {
-    'P1114': {'nombre': 'PTR 1x1" Cal 14', 'I': 1.15, 'ancho': 25.4, 'alto': 25.4, 't': 1.9, 'tags': ['ptr', 'perfil', 'tubular', '1', 'una', 'calibre', '14', 'catorce', 'cuadrado']},
-    'P151514': {'nombre': 'PTR 1.5x1.5" Cal 14', 'I': 4.12, 'ancho': 38.1, 'alto': 38.1, 't': 1.9, 'tags': ['ptr', 'perfil', 'tubular', '1.5', 'pulgada y media', 'calibre', '14', 'catorce', 'cuadrado']},
-    'P2214': {'nombre': 'PTR 2x2" Cal 14', 'I': 14.50, 'ancho': 50.8, 'alto': 50.8, 't': 1.9, 'tags': ['ptr', 'perfil', 'tubular', '2', 'dos', 'calibre', '14', 'catorce', 'cuadrado']},
-    'P2211': {'nombre': 'PTR 2x2" Cal 11', 'I': 22.10, 'ancho': 50.8, 'alto': 50.8, 't': 3.0, 'tags': ['ptr', 'perfil', 'tubular', '2', 'dos', 'calibre', '11', 'once', 'cuadrado']},
-    'P3311': {'nombre': 'PTR 3x3" Cal 11', 'I': 72.40, 'ancho': 76.2, 'alto': 76.2, 't': 3.0, 'tags': ['ptr', 'perfil', 'tubular', '3', 'tres', 'calibre', '11', 'once', 'cuadrado']},
-    'P3310': {'nombre': 'PTR 3x3" Cal 10', 'I': 88.00, 'ancho': 76.2, 'alto': 76.2, 't': 3.4, 'tags': ['ptr', 'perfil', 'tubular', '3', 'tres', 'calibre', '10', 'diez', 'cuadrado']},
-    'P4411': {'nombre': 'PTR 4x4" Cal 11', 'I': 180.0, 'ancho': 101.6, 'alto': 101.6, 't': 3.0, 'tags': ['ptr', 'perfil', 'tubular', '4', 'cuatro', 'calibre', '11', 'once', 'cuadrado']},
-    'IPR413': {'nombre': 'Viga IPR 4x13 lb/ft', 'I': 470.0, 'ancho': 103.0, 'alto': 106.0, 't': 7.1, 'tags': ['viga', 'ipr', '4', 'cuatro', '13', 'trece', 'libras']}
-}
+# --- NÚCLEO DE DATOS: GOOGLE SHEETS (Hard Cutover) ---
+creds_json = os.getenv("GOOGLE_CREDS")
+
+if not creds_json:
+    raise ValueError("ERROR CRÍTICO: Variable GOOGLE_CREDS no detectada. El servidor no arrancará sin conexión a la base de datos.")
+
+# Autenticación estricta con Google Cloud
+info = json.loads(creds_json)
+creds = Credentials.from_service_account_info(
+    info, 
+    scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+)
+client = gspread.authorize(creds)
+sheet = client.open("CEM_Database").sheet1
+
+def cargar_catalogo_dinamico():
+    """Descarga la tabla de Google Sheets y construye el motor en RAM."""
+    print("Conectando a Google Sheets para descargar inventario...")
+    datos = sheet.get_all_records()
+    nuevo_catalogo = {}
+    for fila in datos:
+        id_perfil = str(fila['ID_Perfil'])
+        nuevo_catalogo[id_perfil] = {
+            'nombre': str(fila['Nombre']),
+            'I': float(fila['Inercia_I']),
+            'ancho': float(fila['Ancho_mm']),
+            'alto': float(fila['Alto_mm']),
+            't': float(fila['Espesor_t']),
+            'tags': [tag.strip().lower() for tag in str(fila['Tags']).split(",")]
+        }
+    return nuevo_catalogo
+
+# El sistema colapsará aquí si no logra descargar la hoja de cálculo
+CATALOGO = cargar_catalogo_dinamico()
 
 class CadRequest(BaseModel):
     voz_completa: str
@@ -38,7 +67,9 @@ class CadRequest(BaseModel):
 
 def buscar_material(texto: str):
     texto = texto.lower()
-    match, max_score = 'P2214', 0
+    # Asignamos un valor por defecto seguro (usando el primer elemento descargado si falla)
+    match = list(CATALOGO.keys())[0] 
+    max_score = 0
     for key, data in CATALOGO.items():
         score = sum(1 for tag in data['tags'] if tag in texto)
         if score > max_score:
@@ -46,17 +77,12 @@ def buscar_material(texto: str):
     return CATALOGO[match]
 
 def proyectar_geometria(p, L, angulo=0, grosor_disco=3):
-    """
-    Motor geométrico con compensación de corte (Kerf).
-    grosor_disco: Tolerancia en milímetros que consume la herramienta de corte.
-    """
     W, H, t = p['ancho'], p['alto'], p['t']
     
     rad = math.radians(angulo)
     descuento = H * math.tan(rad)
     descuento = min(descuento, L)
     
-    # --- CONOCIMIENTO EXPERTO: Compensación Kerf ---
     medida_fabricacion = L + grosor_disco
     
     alzado = np.array([
@@ -80,32 +106,21 @@ def proyectar_geometria(p, L, angulo=0, grosor_disco=3):
     }
 
 def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
-    """
-    Calcula cuántos tramos enteros y qué cortes se necesitan para alcanzar
-    una longitud total, considerando el desperdicio del disco de corte (kerf).
-    """
-    # 1. ¿Cuántos tramos completos de 6m necesitamos?
     tramos_enteros = longitud_total // tramo_estandar
-    
-    # 2. ¿Cuánto falta para completar la medida?
     resto = longitud_total % tramo_estandar
     
     instrucciones = []
     tramos_a_comprar = tramos_enteros
     retazo_util = 0
     
-    # Si hay tramos completos, los anotamos sin aplicar descuento de corte
     if tramos_enteros > 0:
         instrucciones.append(f"{tramos_enteros} tramo(s) entero(s) de {tramo_estandar} mm (De fábrica)")
         
-    # Si sobra un pedazo, a ese SÍ le aplicamos el Kerf (el disco)
     punta_larga_resto = 0
     if resto > 0:
         punta_larga_resto = resto + kerf
         instrucciones.append(f"1 corte de {punta_larga_resto} mm (Incluye {kerf} mm por el disco)")
         tramos_a_comprar += 1
-        
-        # Calculamos cuánto nos sobró de ese último tubo que compramos
         retazo_util = tramo_estandar - punta_larga_resto
         
     return {
@@ -117,16 +132,12 @@ def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
     }
 
 def evaluar_seguridad(Pcr):
-    """
-    Evalúa la Carga Crítica de Euler y retorna un texto de diagnóstico, 
-    un color RGB (para el PDF) y un color Hexadecimal (para el SVG).
-    """
     if Pcr >= 150:
-        return "ESTRUCTURAL (Seguro para carga pesada)", (0, 120, 0), "#007800" # Verde
+        return "ESTRUCTURAL (Seguro para carga pesada)", (0, 120, 0), "#007800" 
     elif Pcr >= 50:
-        return "LIGERO (Solo carga secundaria/vista)", (200, 100, 0), "#c86400" # Naranja
+        return "LIGERO (Solo carga secundaria/vista)", (200, 100, 0), "#c86400" 
     else:
-        return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" # Rojo
+        return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" 
 
 # --- MOTORES DE RENDERIZADO (SVG / PDF) ---
 
@@ -145,22 +156,13 @@ def renderizar_svg(geo, p, L, Pcr, angulo, diag_texto, diag_hex):
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {W_view} {H_view}">',
         '<style>.line {stroke:#1a1a1a; fill:none; stroke-width:3;} .cota {stroke:red; stroke-width:1.5;} .txt {font-family:monospace; font-size:18px; font-weight:bold;}</style>',
-        
-        # Carril Central
         f'<polygon points="{fmt(geo["alzado"])}" class="line"/>',
         f'<path d="M {fmt(geo["ext"])} Z M {fmt(geo["int"])} Z" fill="#d0d0d0" stroke="black" fill-rule="evenodd"/>',
-        
-        # Carril Superior (Cotas)
         f'<line x1="0" y1="{30*s}" x2="{L*s}" y2="{30*s}" class="cota"/>',
         f'<text x="{(L*s)/2}" y="{24*s}" class="txt" text-anchor="middle" fill="red">{L} mm</text>',
-        
-        # Carril Inferior (Textos)
         f'<text x="10" y="{carril_superior + (H*s) + (20*s)}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
         f'<text x="10" y="{carril_superior + (H*s) + (35*s)}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
-        
-        # El Semáforo de Seguridad en pantalla
         f'<text x="10" y="{carril_superior + (H*s) + (50*s)}" class="txt" fill="{diag_hex}">ESTADO: {diag_texto} (Soporta: {Pcr} kg)</text>',
-        
         '</svg>'
     ]
     return "".join(svg)
@@ -180,14 +182,12 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
         escala = 1.0
         texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
 
-    # --- MEMBRETE TÉCNICO ---
     pdf.set_font("helvetica", "B", 14)
     pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
     pdf.cell(0, 6, f"Material: {p['nombre']} | Pcr: {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
     
-    # --- LISTA DE CORTE Y MATERIALES ---
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", "B", 10)
     pdf.cell(0, 6, "INSTRUCCIONES DE CORTE (Tramos de 6m):", new_x="LMARGIN", new_y="NEXT", fill=True)
@@ -202,7 +202,6 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
     pdf.cell(0, 5, f"Retazo útil sobrante: {despiece['retazo']} mm", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     
-    # --- ALERTA DE SEGURIDAD ---
     pdf.set_text_color(*diag_rgb) 
     pdf.set_font("helvetica", "B", 10)
     pdf.cell(0, 6, f"Estatus Estructural: {diag_texto}", new_x="LMARGIN", new_y="NEXT")
@@ -211,7 +210,6 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
     altura_linea = pdf.get_y() + 2
     pdf.line(10, altura_linea, 270, altura_linea) 
     
-    # --- DIBUJO GEOMÉTRICO ---
     origen_x = 20
     origen_y = altura_linea + 10
     
