@@ -3,3 +3,5 @@ uvicorn
 pydantic
 fpdf2==2.7.9
 numpy
+gspread==6.1.2
+google-auth==2.29.0
