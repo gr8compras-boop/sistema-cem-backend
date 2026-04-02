@@ -2,3 +2,4 @@ fastapi
 uvicorn
 pydantic
 fpdf2==2.7.9
+numpy
