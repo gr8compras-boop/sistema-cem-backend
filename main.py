@@ -14,6 +14,13 @@ import json
 from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
+import os
+from supabase import create_client, Client
+
+# --- CONEXIÓN A SUPABASE (MEMORIA DEL TALLER) ---
+url: str = os.environ.get("https://jrkafqfltlwurazwzxsm.supabase.co")
+key: str = os.environ.get("sb_publishable_Qobkm0ixC7PUxBbwll4CLQ_r0YKXb0X")
+supabase: Client = create_client(url, key) if url and key else None
 
 app = FastAPI(title="Motor CAD Paramétrico CEM v5.1 - Cloud CSV Ligero")
 
@@ -401,25 +408,23 @@ async def api_cem(req: CadRequest):
     
     pdf_base64 = generar_pdf_1a1(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_adaptado)
 
-    # --- MEMORIA DEL TALLER: GUARDAR REGISTRO EN FIREBASE ---
-    if db is not None:
+    # --- MEMORIA DEL TALLER: GUARDADO PROFESIONAL EN SUPABASE ---
+    if supabase:
         try:
-            registro_plano = {
-                "fecha_creacion": datetime.utcnow().isoformat(),
-                "material": material['nombre'],
+            registro = {
+                "material_nombre": material['nombre'],
+                "longitud_mm": longitud_referencia,
+                "angulo_grados": angulo,
+                "pcr_kg": pcr_redondo,
+                "estatus_seguridad": diag_texto,
                 "piezas_totales": len(lista_cortes),
-                "longitud_maxima_mm": longitud_referencia,
-                "angulo_corte": angulo,
-                "diagnostico_seguridad": diag_texto,
-                "carga_critica_kg": pcr_redondo,
-                "tramos_a_comprar": optimizacion['tramos_comprar'],
-                "eficiencia_financiera": optimizacion['eficiencia_porcentaje']
+                "eficiencia_porcentaje": optimizacion['eficiencia_porcentaje']
             }
-            # Guarda el documento en una colección llamada 'historial_planos'
-            db.collection("historial_planos").add(registro_plano)
-            print("💾 Registro guardado en la nube.")
+            # Insertamos en la tabla que creamos en el SQL Editor
+            supabase.table("historial_planos").insert(registro).execute()
+            print("💾 Registro guardado en Supabase exitosamente.")
         except Exception as e:
-            print(f"⚠️ Error al guardar el historial en Firebase: {e}")
+            print(f"⚠️ Error al guardar en Supabase: {e}")
 
     return {
         "status": "success",
