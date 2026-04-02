@@ -132,6 +132,58 @@ def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
         "lista_instrucciones": instrucciones
     }
 
+def optimizar_cortes_1d(lista_cortes, tramo_estandar=6000, kerf=3):
+    """
+    Algoritmo First Fit Decreasing (FFD) para optimizar el acomodo de múltiples 
+    cortes en tramos estándar, minimizando la merma y maximizando la utilidad.
+    """
+    # 1. Ordenamos los cortes de mayor a menor longitud
+    cortes_ordenados = sorted(lista_cortes, reverse=True)
+    tramos_utilizados = [] # Lista de listas. Cada sublista es un tramo de 6m
+    
+    for corte_original in cortes_ordenados:
+        # Sumamos el desgaste del disco a cada pieza individual
+        corte_real = corte_original + kerf
+        acomodado = False
+        
+        # 2. Intentamos meter la pieza en los tramos que ya empezamos a cortar
+        for tramo in tramos_utilizados:
+            espacio_ocupado = sum(tramo)
+            if (espacio_ocupado + corte_real) <= tramo_estandar:
+                tramo.append(corte_real)
+                acomodado = True
+                break
+                
+        # 3. Si la pieza no cabe en los retazos, sacamos un tramo nuevo del inventario
+        if not acomodado:
+            tramos_utilizados.append([corte_real])
+            
+    # --- REPORTAJE EJECUTIVO DE MATERIALES ---
+    reporte_tramos = []
+    retazo_global = 0
+    
+    for i, tramo in enumerate(tramos_utilizados):
+        ocupado = sum(tramo)
+        sobrante = tramo_estandar - ocupado
+        retazo_global += sobrante
+        reporte_tramos.append({
+            "numero_tramo": i + 1,
+            "cortes_asignados": tramo,
+            "sobrante_mm": sobrante
+        })
+        
+    # Calculamos la eficiencia financiera del uso del material
+    total_material_comprado = len(tramos_utilizados) * tramo_estandar
+    suma_cortes_netos = sum(lista_cortes)
+    eficiencia = round((suma_cortes_netos / total_material_comprado) * 100, 1) if total_material_comprado > 0 else 0
+
+    return {
+        "tramos_comprar": len(tramos_utilizados),
+        "detalle_tramos": reporte_tramos,
+        "retazo_global_mm": retazo_global,
+        "eficiencia_porcentaje": eficiencia
+    }
+
 def evaluar_seguridad(Pcr):
     if Pcr >= 150:
         return "ESTRUCTURAL (Seguro para carga pesada)", (0, 120, 0), "#007800" 
