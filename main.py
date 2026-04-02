@@ -132,6 +132,49 @@ def calcular_despiece(longitud_total, tramo_estandar=6000, kerf=3):
         "lista_instrucciones": instrucciones
     }
 
+def extraer_lista_cortes(voz):
+    """
+    Traduce comandos de voz complejos en una lista de cortes matemáticos.
+    Soporta lenguaje natural (ej. "dos de un metro", "3 piezas de 500").
+    """
+    voz_norm = voz.lower()
+
+    # Diccionario para convertir texto a números (clave para comandos de voz)
+    mapa_numeros = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
+                    'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
+                    'ocho': '8', 'nueve': '9', 'diez': '10'}
+    
+    for palabra, digito in mapa_numeros.items():
+        voz_norm = re.sub(rf'\b{palabra}\b', digito, voz_norm)
+
+    # Buscamos el patrón: (Cantidad) + (Palabras intermedias) + (Medida) + (Unidad)
+    patron = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)?'
+    coincidencias = re.findall(patron, voz_norm)
+    
+    lista_cortes = []
+    
+    if coincidencias:
+        for cant_str, med_str, unidad in coincidencias:
+            cantidad = int(cant_str)
+            medida = int(med_str)
+            
+            # Conversión a milímetros (nuestra unidad base en el taller)
+            if unidad.startswith('m') and 'mili' not in unidad and unidad not in ['mm']: 
+                medida *= 1000
+            elif unidad.startswith('c'):
+                medida *= 10
+                
+            lista_cortes.extend([medida] * cantidad)
+    else:
+        # Mecanismo de respaldo: Si el usuario habla simple ("un ptr de 2 metros")
+        nums = re.findall(r'\d+', voz_norm)
+        longitud = int(nums[0]) if nums else 1000
+        if any(m in voz_norm for m in ["metro", "mts"]): longitud *= 1000
+        elif any(c in voz_norm for c in ["cm", "centimetro"]): longitud *= 10
+        lista_cortes.append(longitud)
+        
+    return lista_cortes
+
 def optimizar_cortes_1d(lista_cortes, tramo_estandar=6000, kerf=3):
     """
     Algoritmo First Fit Decreasing (FFD) para optimizar el acomodo de múltiples 
@@ -293,18 +336,18 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb, despiece):
 async def api_cem(req: CadRequest):
     voz = req.voz_completa.lower()
 
-    nums = re.findall(r'\d+', voz)
-    longitud = int(nums[0]) if nums else 1000
-    if any(m in voz for m in ["metro", " mts"]): 
-        longitud *= 1000
+    # 1. Extracción Multilongitud (El nuevo NLP)
+    lista_cortes = extraer_lista_cortes(voz)
+    
+    # Para la física (Euler) y el dibujo (PDF), tomaremos la pieza más larga como referencia
+    longitud_referencia = max(lista_cortes)
 
     match_angulo = re.search(r'(\d+)\s*grados', voz)
     angulo = int(match_angulo.group(1)) if match_angulo else 0
 
     material = buscar_material(voz)
-    L_cm = longitud / 10
+    L_cm = longitud_referencia / 10
     
-    # Manejo de error si Inercia_I es 0 para evitar división por cero
     try:
         Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
         pcr_redondo = round(Pcr, 2)
@@ -313,21 +356,35 @@ async def api_cem(req: CadRequest):
         
     diag_texto, diag_rgb, diag_hex = evaluar_seguridad(pcr_redondo)
     
-    geo = proyectar_geometria(material, longitud, angulo, grosor_disco=3)
-    despiece_info = calcular_despiece(longitud, tramo_estandar=6000, kerf=3)
-    svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_hex)
-    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_info)
+    # 2. Geometría Teórica
+    geo = proyectar_geometria(material, longitud_referencia, angulo, grosor_disco=3)
+    
+    # 3. ALGORITMO DE OPTIMIZACIÓN INDUSTRIAL (Acomodo de Material)
+    optimizacion = optimizar_cortes_1d(lista_cortes, tramo_estandar=6000, kerf=3)
+    
+    svg_final = renderizar_svg(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_hex)
+    
+    # --- ADAPTADOR PARA EL PDF ---
+    # Traducimos el diccionario del nuevo algoritmo al formato que tu PDF ya sabe imprimir
+    instrucciones_pdf = []
+    for tramo in optimizacion['detalle_tramos']:
+        cortes_str = " + ".join([f"{c}mm" for c in tramo['cortes_asignados']])
+        instrucciones_pdf.append(f"Tramo {tramo['numero_tramo']}: [{cortes_str}] | Sobra: {tramo['sobrante_mm']}mm")
+        
+    despiece_adaptado = {
+        "tramos_comprar": optimizacion['tramos_comprar'],
+        "retazo": optimizacion['retazo_global_mm'],
+        "lista_instrucciones": instrucciones_pdf
+    }
+    
+    pdf_base64 = generar_pdf_1a1(geo, material, longitud_referencia, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_adaptado)
     
     return {
         "status": "success",
         "material": material['nombre'],
-        "pcr_kg": pcr_redondo,
-        "seguridad": diag_texto,
-        "punta_larga_real": geo['punta_larga'], 
-        "punta_corta_real": geo['punta_corta'], 
-        "angulo": angulo,
-        "tramos_comprar": despiece_info['tramos_comprar'],
-        "retazo": despiece_info['retazo'],
+        "piezas_solicitadas": len(lista_cortes),
+        "eficiencia_financiera": f"{optimizacion['eficiencia_porcentaje']}%",
+        "tramos_comprar": optimizacion['tramos_comprar'],
         "svg_code": svg_final,
         "pdf_base64": pdf_base64
     }
