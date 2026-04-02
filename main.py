@@ -144,45 +144,54 @@ def proyectar_geometria(p, L, angulo=0):
         'punta_corta': round(L - descuento, 1)
     }
 
-def renderizar_svg(geo, p, L, Pcr, angulo):
+def evaluar_seguridad(Pcr):
+    """
+    Evalúa la Carga Crítica de Euler y retorna un texto de diagnóstico, 
+    un color RGB (para el PDF) y un color Hexadecimal (para el SVG).
+    """
+    if Pcr >= 150:
+        return "ESTRUCTURAL (Seguro para carga pesada)", (0, 120, 0), "#007800" # Verde
+    elif Pcr >= 50:
+        return "LIGERO (Solo carga secundaria/vista)", (200, 100, 0), "#c86400" # Naranja
+    else:
+        return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" # Rojo
+
+def renderizar_svg(geo, p, L, Pcr, angulo, diag_texto, diag_hex):
     s = MM_TO_PX
     H = p['alto']
     
-    # 1. Definición de Carriles (Cajas Delimitadoras)
-    carril_superior = 50 * s  # Espacio arriba para cotas
-    carril_inferior = 40 * s  # Espacio abajo para textos
+    carril_superior = 50 * s  
+    carril_inferior = 65 * s  # Ampliamos el carril para la 3ra línea
     
     W_view = (geo['total_w'] + 50) * s
     H_view = (H * s) + carril_superior + carril_inferior
     
-    # El dibujo se desplaza hacia abajo para respetar el carril superior
     def fmt(pts): return " ".join([f"{pt[0]*s},{pt[1]*s + carril_superior}" for pt in pts])
 
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {W_view} {H_view}">',
         '<style>.line {stroke:#1a1a1a; fill:none; stroke-width:3;} .cota {stroke:red; stroke-width:1.5;} .txt {font-family:monospace; font-size:18px; font-weight:bold;}</style>',
         
-        # --- CARRIL CENTRAL (Dibujo) ---
+        # Carril Central
         f'<polygon points="{fmt(geo["alzado"])}" class="line"/>',
         f'<path d="M {fmt(geo["ext"])} Z M {fmt(geo["int"])} Z" fill="#d0d0d0" stroke="black" fill-rule="evenodd"/>',
         
-        # --- CARRIL SUPERIOR (Cotas de Medición) ---
+        # Carril Superior (Cotas)
         f'<line x1="0" y1="{30*s}" x2="{L*s}" y2="{30*s}" class="cota"/>',
         f'<text x="{(L*s)/2}" y="{24*s}" class="txt" text-anchor="middle" fill="red">{L} mm</text>',
         
-        # --- CARRIL INFERIOR (Textos Técnicos Dinámicos) ---
-        # Posicionamos el texto calculando exactamente dónde termina la pieza
+        # Carril Inferior (Textos)
         f'<text x="10" y="{carril_superior + (H*s) + (20*s)}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
         f'<text x="10" y="{carril_superior + (H*s) + (35*s)}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
+        
+        # --- NUEVO: El Semáforo de Seguridad en pantalla ---
+        f'<text x="10" y="{carril_superior + (H*s) + (50*s)}" class="txt" fill="{diag_hex}">ESTADO: {diag_texto} (Soporta: {Pcr} kg)</text>',
         
         '</svg>'
     ]
     return "".join(svg)
     
-import base64
-from fpdf import FPDF
-
-def generar_pdf_1a1(geo, p, L, Pcr, angulo):
+def generar_pdf_1a1(geo, p, L, Pcr, angulo, diag_texto, diag_rgb):
     pdf = FPDF(orientation="landscape", unit="mm", format="letter")
     pdf.add_page()
     
@@ -197,29 +206,34 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo):
         escala = 1.0
         texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
 
-    # --- MEMBRETE (Fijo en la parte superior) ---
+    # --- MEMBRETE TÉCNICO ---
     pdf.set_font("helvetica", "B", 14)
-    pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN Y SEGURIDAD", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 6, f"Material: {p['nombre']} | Capacidad (Pcr): {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Longitud Total (Punta Larga): {geo['punta_larga']} mm", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Material: {p['nombre']} | Longitud de corte: {geo['punta_larga']} mm", new_x="LMARGIN", new_y="NEXT")
     
     if angulo > 0:
         pdf.set_text_color(0, 0, 200)
         pdf.cell(0, 6, f"Corte a: {angulo} grados | Punta Corta: {geo['punta_corta']} mm", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
     
+    # --- NUEVO: Alerta de Seguridad ---
+    pdf.set_text_color(*diag_rgb) # Aplica el color del semáforo
+    pdf.set_font("helvetica", "B", 10)
+    pdf.cell(0, 6, f"Evaluación de Ingeniería: {diag_texto} | Pcr: {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0) # Volver a negro normal
+    pdf.set_font("helvetica", "", 10)
+    
     pdf.set_text_color(200, 0, 0)
     pdf.cell(0, 6, texto_escala, new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0) 
     
-    # Línea divisoria dinámica (Baja un poco más si hay ángulo para no chocar)
-    altura_linea = 50 if angulo > 0 else 44
+    # Línea divisoria inteligente (se ajusta a la cantidad de texto)
+    altura_linea = pdf.get_y() + 2
     pdf.line(10, altura_linea, 270, altura_linea) 
     
-    # --- DIBUJO GEOMÉTRICO (Carril Central) ---
-    # Aseguramos que el origen Y siempre empiece debajo de la línea divisoria
+    # --- DIBUJO GEOMÉTRICO ---
     origen_x = 20
     origen_y = altura_linea + 10
     
@@ -235,18 +249,50 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo):
     pdf.polygon(puntos_ext, style="D")
     pdf.polygon(puntos_int, style="D")
     
-    # --- COTAS EN EL PDF (Carril Inferior Dinámico) ---
-    # Dibujamos las líneas de cota rojas JUSTO debajo de la pieza, sin importar qué tan alta sea
     y_cota = origen_y + (H * escala) + 10
-    
-    pdf.set_draw_color(200, 0, 0) # Rojo para la cota
+    pdf.set_draw_color(200, 0, 0) 
     pdf.line(origen_x, y_cota, origen_x + (L * escala), y_cota)
-    
     pdf.set_text_color(200, 0, 0)
     pdf.set_font("helvetica", "B", 9)
-    # Centrar el texto de la medida en la línea de cota
     pdf.text(origen_x + ((L * escala) / 2) - 5, y_cota - 2, f"{L} mm")
     
     pdf_bytes = pdf.output()
     return base64.b64encode(pdf_bytes).decode('utf-8')
 
+@app.post("/procesar-diseno")
+async def api_cem(req: CadRequest):
+    voz = req.voz_completa.lower()
+
+    nums = re.findall(r'\d+', voz)
+    longitud = int(nums[0]) if nums else 1000
+    if any(m in voz for m in ["metro", " mts"]): 
+        longitud *= 1000
+
+    match_angulo = re.search(r'(\d+)\s*grados', voz)
+    angulo = int(match_angulo.group(1)) if match_angulo else 0
+
+    material = buscar_material(voz)
+    L_cm = longitud / 10
+    Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
+    pcr_redondo = round(Pcr, 2)
+    
+    # --- EJECUTAR EVALUACIÓN DE SEGURIDAD ---
+    diag_texto, diag_rgb, diag_hex = evaluar_seguridad(pcr_redondo)
+    
+    geo = proyectar_geometria(material, longitud, angulo)
+    
+    # Pasamos las nuevas variables de diagnóstico
+    svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_hex)
+    pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_rgb)
+    
+    return {
+        "status": "success",
+        "material": material['nombre'],
+        "pcr_kg": pcr_redondo,
+        "seguridad": diag_texto, # Para uso futuro en Stitch si lo deseas
+        "punta_larga": geo['punta_larga'],
+        "punta_corta": geo['punta_corta'],
+        "angulo": angulo,
+        "svg_code": svg_final,
+        "pdf_base64": pdf_base64
+    }    
