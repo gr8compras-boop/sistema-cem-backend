@@ -1,7 +1,6 @@
-import os
-import json
-import gspread
-from google.oauth2.service_account import Credentials
+import csv
+import requests
+from io import StringIO
 import numpy as np
 import math
 import re
@@ -11,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Motor CAD Paramétrico CEM v5.0 - Industrial Cloud")
+app = FastAPI(title="Motor CAD Paramétrico CEM v5.1 - Cloud CSV Ligero")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,40 +24,43 @@ MM_TO_PX = 3.779527559
 E_ACERO = 2100000 # kg/cm²
 TRAMO_ESTANDAR = 6000
 
-# --- NÚCLEO DE DATOS: GOOGLE SHEETS (Hard Cutover) ---
-creds_json = os.getenv("GOOGLE_CREDS")
+# --- NÚCLEO DE DATOS: GOOGLE SHEETS (Vía CSV Público) ---
+URL_HOJA_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9OF20weoXx_tx_JEMiHtcEYYdH5Jg1Nxc_kAOtrgJT2sg30_pKHJWzaAl41VB6na4aRLI6w0KVIQ/pub?gid=0&single=true&output=csv"
 
-if not creds_json:
-    raise ValueError("ERROR CRÍTICO: Variable GOOGLE_CREDS no detectada. El servidor no arrancará sin conexión a la base de datos.")
+def cargar_catalogo_desde_web():
+    """Descarga el catálogo desde el enlace público de Google Sheets en formato CSV."""
+    print("Conectando a la base de datos CSV en la nube...")
+    try:
+        response = requests.get(URL_HOJA_CSV)
+        response.raise_for_status() 
+        
+        f = StringIO(response.text)
+        lector_csv = csv.DictReader(f)
+        
+        nuevo_catalogo = {}
+        for fila in lector_csv:
+            id_perfil = str(fila.get('ID_Perfil', '')).strip()
+            if not id_perfil:
+                continue # Salta filas vacías
+                
+            nuevo_catalogo[id_perfil] = {
+                'nombre': str(fila.get('Nombre', '')),
+                'I': float(fila.get('Inercia_I', 0)),
+                'ancho': float(fila.get('Ancho_mm', 0)),
+                'alto': float(fila.get('Alto_mm', 0)),
+                't': float(fila.get('Espesor_t', 0)),
+                'tags': [tag.strip().lower() for tag in str(fila.get('Tags', '')).split(",")]
+            }
+        print(f"✅ Éxito: {len(nuevo_catalogo)} perfiles cargados en memoria RAM.")
+        return nuevo_catalogo
+        
+    except Exception as e:
+        print(f"❌ Error al cargar nube: {e}")
+        # Salvavidas extremo por si falla la red de Render
+        return {'P2214': {'nombre': 'PTR 2x2" Cal 14 (Respaldo)', 'I': 14.50, 'ancho': 50.8, 'alto': 50.8, 't': 1.9, 'tags': ['ptr']}}
 
-# Autenticación estricta con Google Cloud
-info = json.loads(creds_json)
-creds = Credentials.from_service_account_info(
-    info, 
-    scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-)
-client = gspread.authorize(creds)
-sheet = client.open("CEM_Database").sheet1
-
-def cargar_catalogo_dinamico():
-    """Descarga la tabla de Google Sheets y construye el motor en RAM."""
-    print("Conectando a Google Sheets para descargar inventario...")
-    datos = sheet.get_all_records()
-    nuevo_catalogo = {}
-    for fila in datos:
-        id_perfil = str(fila['ID_Perfil'])
-        nuevo_catalogo[id_perfil] = {
-            'nombre': str(fila['Nombre']),
-            'I': float(fila['Inercia_I']),
-            'ancho': float(fila['Ancho_mm']),
-            'alto': float(fila['Alto_mm']),
-            't': float(fila['Espesor_t']),
-            'tags': [tag.strip().lower() for tag in str(fila['Tags']).split(",")]
-        }
-    return nuevo_catalogo
-
-# El sistema colapsará aquí si no logra descargar la hoja de cálculo
-CATALOGO = cargar_catalogo_dinamico()
+# Se ejecuta al encender el servidor en Render
+CATALOGO = cargar_catalogo_desde_web()
 
 class CadRequest(BaseModel):
     voz_completa: str
@@ -67,7 +69,6 @@ class CadRequest(BaseModel):
 
 def buscar_material(texto: str):
     texto = texto.lower()
-    # Asignamos un valor por defecto seguro (usando el primer elemento descargado si falla)
     match = list(CATALOGO.keys())[0] 
     max_score = 0
     for key, data in CATALOGO.items():
@@ -250,17 +251,19 @@ async def api_cem(req: CadRequest):
 
     material = buscar_material(voz)
     L_cm = longitud / 10
-    Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
-    pcr_redondo = round(Pcr, 2)
     
+    # Manejo de error si Inercia_I es 0 para evitar división por cero
+    try:
+        Pcr = (math.pi**2 * E_ACERO * material['I']) / (L_cm**2)
+        pcr_redondo = round(Pcr, 2)
+    except Exception:
+        pcr_redondo = 0
+        
     diag_texto, diag_rgb, diag_hex = evaluar_seguridad(pcr_redondo)
     
     geo = proyectar_geometria(material, longitud, angulo, grosor_disco=3)
-    
     despiece_info = calcular_despiece(longitud, tramo_estandar=6000, kerf=3)
-    
     svg_final = renderizar_svg(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_hex)
-    
     pdf_base64 = generar_pdf_1a1(geo, material, longitud, pcr_redondo, angulo, diag_texto, diag_rgb, despiece_info)
     
     return {
