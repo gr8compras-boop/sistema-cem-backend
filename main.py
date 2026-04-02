@@ -144,51 +144,51 @@ def proyectar_geometria(p, L, angulo=0):
         'punta_corta': round(L - descuento, 1)
     }
 
-def renderizar_svg(geo, p, L, Pcr, angulo): 
+def renderizar_svg(geo, p, L, Pcr, angulo):
     s = MM_TO_PX
-    W_view = (geo['total_w'] + 50) * s
-    H_view = (p['alto'] + 100) * s
+    H = p['alto']
     
-    # Función de formato corregida: pt[0] es X, pt[1] es Y
-    def fmt(pts): return " ".join([f"{pt[0]*s},{pt[1]*s + (50*s)}" for pt in pts])
+    # 1. Definición de Carriles (Cajas Delimitadoras)
+    carril_superior = 50 * s  # Espacio arriba para cotas
+    carril_inferior = 40 * s  # Espacio abajo para textos
+    
+    W_view = (geo['total_w'] + 50) * s
+    H_view = (H * s) + carril_superior + carril_inferior
+    
+    # El dibujo se desplaza hacia abajo para respetar el carril superior
+    def fmt(pts): return " ".join([f"{pt[0]*s},{pt[1]*s + carril_superior}" for pt in pts])
 
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 {W_view} {H_view}">',
         '<style>.line {stroke:#1a1a1a; fill:none; stroke-width:3;} .cota {stroke:red; stroke-width:1.5;} .txt {font-family:monospace; font-size:18px; font-weight:bold;}</style>',
         
-        # Vista de Alzado
+        # --- CARRIL CENTRAL (Dibujo) ---
         f'<polygon points="{fmt(geo["alzado"])}" class="line"/>',
-        
-        # Vista de Sección (Con hueco real)
         f'<path d="M {fmt(geo["ext"])} Z M {fmt(geo["int"])} Z" fill="#d0d0d0" stroke="black" fill-rule="evenodd"/>',
         
-        # Cota de Longitud
+        # --- CARRIL SUPERIOR (Cotas de Medición) ---
         f'<line x1="0" y1="{30*s}" x2="{L*s}" y2="{30*s}" class="cota"/>',
         f'<text x="{(L*s)/2}" y="{24*s}" class="txt" text-anchor="middle" fill="red">{L} mm</text>',
         
-        # --- Información de Ingeniería con Ángulo y Puntas (DENTRO DE LA LISTA) ---
-        f'<text x="10" y="{H_view-20}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
-        f'<text x="10" y="{H_view-5}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
+        # --- CARRIL INFERIOR (Textos Técnicos Dinámicos) ---
+        # Posicionamos el texto calculando exactamente dónde termina la pieza
+        f'<text x="10" y="{carril_superior + (H*s) + (20*s)}" class="txt" fill="#333">PIEZA: {p["nombre"]} | CORTE: {angulo}°</text>',
+        f'<text x="10" y="{carril_superior + (H*s) + (35*s)}" class="txt" fill="#000">PUNTA LARGA: {geo["punta_larga"]} mm | PUNTA CORTA: {geo["punta_corta"]} mm</text>',
         
         '</svg>'
     ]
-
     return "".join(svg)
     
 import base64
 from fpdf import FPDF
 
-# 1. ¡Agregamos 'angulo' a los parámetros!
 def generar_pdf_1a1(geo, p, L, Pcr, angulo):
-    """
-    Genera un PDF tamaño Carta. Auto-escala el dibujo si excede el tamaño del papel.
-    """
     pdf = FPDF(orientation="landscape", unit="mm", format="letter")
     pdf.add_page()
     
-    # --- 1. CÁLCULO DE ESCALA DINÁMICA ---
     ancho_maximo_papel = 239.0 
     ancho_dibujo = geo['total_w']
+    H = p['alto']
     
     if ancho_dibujo > ancho_maximo_papel:
         escala = ancho_maximo_papel / ancho_dibujo
@@ -197,35 +197,31 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo):
         escala = 1.0
         texto_escala = "Escala Visual: 1:1 (Medidas Reales)"
 
-    # --- 2. MEMBRETE / CARTUCHO TÉCNICO (Unificado) ---
+    # --- MEMBRETE (Fijo en la parte superior) ---
     pdf.set_font("helvetica", "B", 14)
     pdf.cell(0, 10, "SISTEMA CEM - PLANO DE FABRICACIÓN", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("helvetica", "", 10)
-    # Mostramos el material y la resistencia primero
     pdf.cell(0, 6, f"Material: {p['nombre']} | Capacidad (Pcr): {Pcr} kg", new_x="LMARGIN", new_y="NEXT")
-    
-    # Mostramos las medidas de fabricación (Puntas)
     pdf.cell(0, 6, f"Longitud Total (Punta Larga): {geo['punta_larga']} mm", new_x="LMARGIN", new_y="NEXT")
     
-    # Si hay un corte angular, lo destacamos en azul
     if angulo > 0:
-        pdf.set_text_color(0, 0, 200) # Azul
+        pdf.set_text_color(0, 0, 200)
         pdf.cell(0, 6, f"Corte a: {angulo} grados | Punta Corta: {geo['punta_corta']} mm", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(0, 0, 0) # Volver a negro
+        pdf.set_text_color(0, 0, 0)
     
-    # Mostramos la escala en rojo al final del membrete
     pdf.set_text_color(200, 0, 0)
     pdf.cell(0, 6, texto_escala, new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0) 
     
-    # Bajamos la línea divisoria para que quepa todo el texto
-    pdf.line(10, 48, 270, 48) 
+    # Línea divisoria dinámica (Baja un poco más si hay ángulo para no chocar)
+    altura_linea = 50 if angulo > 0 else 44
+    pdf.line(10, altura_linea, 270, altura_linea) 
     
-    # --- 3. DIBUJO GEOMÉTRICO ---
-    # Bajamos el origen Y para que el dibujo no choque con el texto
+    # --- DIBUJO GEOMÉTRICO (Carril Central) ---
+    # Aseguramos que el origen Y siempre empiece debajo de la línea divisoria
     origen_x = 20
-    origen_y = 60
+    origen_y = altura_linea + 10
     
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.5)
@@ -239,8 +235,18 @@ def generar_pdf_1a1(geo, p, L, Pcr, angulo):
     pdf.polygon(puntos_ext, style="D")
     pdf.polygon(puntos_int, style="D")
     
-    # --- 4. EXPORTACIÓN ---
+    # --- COTAS EN EL PDF (Carril Inferior Dinámico) ---
+    # Dibujamos las líneas de cota rojas JUSTO debajo de la pieza, sin importar qué tan alta sea
+    y_cota = origen_y + (H * escala) + 10
+    
+    pdf.set_draw_color(200, 0, 0) # Rojo para la cota
+    pdf.line(origen_x, y_cota, origen_x + (L * escala), y_cota)
+    
+    pdf.set_text_color(200, 0, 0)
+    pdf.set_font("helvetica", "B", 9)
+    # Centrar el texto de la medida en la línea de cota
+    pdf.text(origen_x + ((L * escala) / 2) - 5, y_cota - 2, f"{L} mm")
+    
     pdf_bytes = pdf.output()
     return base64.b64encode(pdf_bytes).decode('utf-8')
-
 
