@@ -231,7 +231,28 @@ def extract_dimensions_3d(text):
         if len(vals) == 2: vals.append(0) 
         return vals
     return None
+
+def extract_components(text):
+    """
+    Extrae la cantidad de elementos internos (entrepaños, niveles, repisas) para ensambles 3D.
+    Incluye mapeo NLP para transcripciones de voz.
+    """
+    text_norm = text.lower()
     
+    # Mapeo de números hablados a dígitos numéricos
+    number_map = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
+                  'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
+                  'ocho': '8', 'nueve': '9', 'diez': '10'}
+    
+    for word, digit in number_map.items():
+        text_norm = re.sub(rf'\b{word}\b', digit, text_norm)
+
+    # Regex blindada con vocabulario extendido
+    pattern = r'\b(\d+)\b\s*(?:entrepaños?|niveles?|divisiones?|repisas?|estantes?)'
+    match = re.search(pattern, text_norm)
+    
+    return int(match.group(1)) if match else 0
+
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
@@ -539,19 +560,30 @@ async def process_design(req: CadRequest):
     # ==========================================
     # MODO A: ENSAMBLE ARQUITECTÓNICO (DA VINCI)
     # ==========================================
-    if dims_3d:
+   if dims_3d:
         L, W, H = dims_3d
         tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
         
-        # 1. Generamos el SVG para la pantalla web
+        # 1. Extraemos los entrepaños usando tu nueva función
+        num_entrepanos = extract_components(voice_input)
+        
         blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}")
         
-        # 2. ⚠️ LA LÍNEA FALTANTE: Generamos el PDF usando el motor FPDF
-        pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'])
-        
-        # 3. Calculamos el peso asumiendo un esqueleto básico
-        total_mm_estimado = (4*L + 4*W + 4*H) if H > 0 else (2*L + 2*W)
+        # 2. Matemáticas de Cotización: Esqueleto base + Entrepaños
+        if H > 0:
+            # Cubo/Prisma completo: 4 aristas de largo, 4 de ancho, 4 de altura.
+            total_mm_estimado = (4*L + 4*W + 4*H)
+            
+            # Sumamos el acero necesario para los marcos de cada nivel interno
+            if num_entrepanos > 0:
+                total_mm_estimado += num_entrepanos * ((2*L) + (2*W))
+        else:
+            # Marco plano 2D
+            total_mm_estimado = (2*L + 2*W)
+            
         peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
+        
+        pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'])
 
         return {
             "status": "success",
@@ -559,10 +591,10 @@ async def process_design(req: CadRequest):
             "is_assembly": True,
             "peso_total_kg": peso_total_kg,
             "pcr_kg": "Análisis de conjunto",
-            "financial_efficiency": "N/A (Diseño Global)",
+            "financial_efficiency": f"Incluye {num_entrepanos} entrepaños", # Mostramos el dato aquí
             "bars_to_buy": "Ver despiece",
             "svg_code": blueprint_svg,
-            "pdf_base64": pdf_arq_b64  # Ahora la variable sí existe
+            "pdf_base64": pdf_arq_b64
         }
 
     # ==========================================
