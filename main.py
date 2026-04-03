@@ -85,22 +85,38 @@ def search_material(text: str):
             max_score, match = score, key
     return CATALOG[match]
 
-def project_geometry(p, L, angle=0, blade_thickness=3):
+def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
     W, H, t = p['width'], p['height'], p['t']
     
     rad = math.radians(angle)
     discount = H * math.tan(rad)
-    discount = min(discount, L)
+    
+    # Prevent the cut from being longer than the piece itself
+    if double_miter:
+        discount = min(discount, L / 2)
+    else:
+        discount = min(discount, L)
     
     manufacturing_measure = L + blade_thickness
     
-    elevation = np.array([
-        [0, 0], 
-        [L, 0], 
-        [L - discount, H], 
-        [0, H]
-    ])
-    
+    # Generate the points for the SVG drawing
+    if double_miter:
+        elevation = np.array([
+            [0, 0], 
+            [L, 0], 
+            [L - discount, H], 
+            [discount, H]  # Left side angled inward
+        ])
+        short_tip = round(manufacturing_measure - (2 * discount), 1)
+    else:
+        elevation = np.array([
+            [0, 0], 
+            [L, 0], 
+            [L - discount, H], 
+            [0, H]         # Left side flat (90 degrees)
+        ])
+        short_tip = round(manufacturing_measure - discount, 1)
+        
     offset_x = L + 40 
     ext = np.array([[0, 0], [W, 0], [W, H], [0, H]]) + [offset_x, 0]
     int_ptr = np.array([[t, t], [t, H-t], [W-t, H-t], [W-t, t]]) + [offset_x, 0]
@@ -111,9 +127,9 @@ def project_geometry(p, L, angle=0, blade_thickness=3):
         'int': int_ptr, 
         'total_w': offset_x + W,
         'long_tip': manufacturing_measure, 
-        'short_tip': round(manufacturing_measure - discount, 1)
+        'short_tip': short_tip
     }
-
+    
 def extract_cut_list(voice_input):
     """
     Translates complex voice commands into a mathematical list of cuts.
@@ -216,6 +232,24 @@ def evaluate_safety(pcr):
         return "LIGERO (Solo carga secundaria/vista)", (200, 100, 0), "#c86400" 
     else:
         return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" 
+
+def calculate_structural_weight(p, total_length_mm):
+    """
+    Calculates the total weight of the requested steel pieces.
+    Formula: Cross-sectional Area * Total Length * Steel Density
+    """
+    W, H, t = p['width'], p['height'], p['t']
+    
+    # Area in mm^2
+    outer_area = W * H
+    inner_area = (W - 2*t) * (H - 2*t)
+    cross_area = outer_area - inner_area
+    
+    # Density of carbon steel (kg/mm^3)
+    steel_density = 0.00000785
+    
+    total_weight_kg = cross_area * total_length_mm * steel_density
+    return round(total_weight_kg, 2)
 
 # --- RENDERING ENGINES (SVG / PDF) ---
 
