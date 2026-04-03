@@ -117,7 +117,7 @@ def project_geometry(p, L, angle=0, blade_thickness=3):
 def extract_cut_list(voice_input):
     """
     Translates complex voice commands into a mathematical list of cuts.
-    Note: Regex and mapping stay in Spanish to process user input correctly.
+    Includes an NLP filter to ignore gauges, angles, and profile sizes.
     """
     voice_norm = voice_input.lower()
 
@@ -128,7 +128,13 @@ def extract_cut_list(voice_input):
     for word, digit in number_map.items():
         voice_norm = re.sub(rf'\b{word}\b', digit, voice_norm)
 
-    pattern = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)?'
+    # 🛑 FILTRO NLP: Eliminar datos técnicos para que no se confundan con cortes
+    voice_norm = re.sub(r'calibre\s*\d+', '', voice_norm) # Ignora "calibre 14"
+    voice_norm = re.sub(r'\d+\s*grados', '', voice_norm)  # Ignora "45 grados"
+    voice_norm = re.sub(r'\d+\s*(?:por|x)\s*\d+', '', voice_norm) # Ignora "2 por 2" o "2x2"
+
+    # Patrón estricto: Exigimos que haya una unidad (cm, mm, m)
+    pattern = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)'
     matches = re.findall(pattern, voice_norm)
     
     cut_list = []
@@ -145,12 +151,17 @@ def extract_cut_list(voice_input):
                 
             cut_list.extend([measure] * qty)
     else:
-        nums = re.findall(r'\d+', voice_norm)
-        length = int(nums[0]) if nums else 1000
-        if any(m in voice_norm for m in ["metro", "mts"]): length *= 1000
-        elif any(c in voice_norm for c in ["cm", "centimetro"]): length *= 10
-        cut_list.append(length)
-        
+        # Respaldo por si el usuario pide algo muy simple como "un ptr de 2 metros"
+        nums = re.findall(r'(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)', voice_norm)
+        if nums:
+            val = int(nums[0][0])
+            u = nums[0][1]
+            if u.startswith('m') and 'mili' not in u and u not in ['mm']: val *= 1000
+            elif u.startswith('c'): val *= 10
+            cut_list.append(val)
+        else:
+            cut_list.append(1000) # Medida por defecto si no entiende nada
+            
     return cut_list
 
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
