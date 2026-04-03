@@ -53,10 +53,10 @@ def load_catalog_from_web():
                 
             new_catalog[profile_id] = {
                 'name': str(row.get('Nombre', '')),
-                'I': float(row.get('Inercia_I', 0)),
-                'width': float(row.get('Ancho_mm', 0)),
-                'height': float(row.get('Alto_mm', 0)),
-                't': float(row.get('Espesor_t', 0)),
+                'I': float(row.get('Inercia_I') or 0),
+                'width': float(row.get('Ancho_mm') or 0),
+                'height': float(row.get('Alto_mm') or 0),
+                't': float(row.get('Espesor_t') or 0),
                 'tags': [tag.strip().lower() for tag in str(row.get('Tags', '')).split(",")]
             }
         print(f"✅ Success: {len(new_catalog)} profiles loaded into RAM.")
