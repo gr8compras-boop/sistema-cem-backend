@@ -308,13 +308,87 @@ def evaluate_safety(pcr):
 
 # --- RENDERING ENGINES (SVG / PDF) ---
 
-def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
+def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA", num_levels=0):
+    vertices = [(0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,H), (L,0,H), (L,W,H), (0,W,H)]
+    edges = [(0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)]
+    
+    # Generar entrepaños intermedios si se solicitan
+    if num_levels > 2:
+        for i in range(1, num_levels - 1):
+            h_level = (H / (num_levels - 1)) * i
+            v_idx = len(vertices)
+            vertices.extend([(0,0,h_level), (L,0,h_level), (L,W,h_level), (0,W,h_level)])
+            edges.extend([(v_idx, v_idx+1), (v_idx+1, v_idx+2), (v_idx+2, v_idx+3), (v_idx+3, v_idx)])
+
+    max_dim = max(L, W, H)
+    scale = 600.0 / (max_dim if max_dim > 0 else 1)
+
+    def proj_front(v): return (v[0]*scale, -v[2]*scale)
+    def proj_side(v):  return (v[1]*scale, -v[2]*scale)
+    def proj_top(v):   return (v[0]*scale, -v[1]*scale)
+    def proj_iso(v):
+        r30 = math.radians(30)
+        x, y, z = v[0]*scale, v[1]*scale, v[2]*scale
+        return ((x - y) * math.cos(r30), -(z + (x + y) * math.sin(r30)))
+
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 3200" style="background-color:#f4f1ea; font-family:monospace;">'
+    svg += f'<text x="50" y="60" fill="#1e293b" font-size="28" font-weight="bold">SISTEMA CEM // PLANO TÉCNICO DE ENSAMBLE</text>'
+    svg += f'<text x="50" y="90" fill="#64748b" font-size="18">PROYECTO: {name} | COMPONENTES: {num_levels} NIVELES</text>'
+    svg += '<line x1="50" y1="110" x2="950" y2="110" stroke="#1e293b" stroke-width="4"/>'
+
+    def draw_view(proj_func, cx, cy, title):
+        pts = [proj_func(v) for v in vertices]
+        min_x, max_x = min(p[0] for p in pts), max(p[0] for p in pts)
+        min_y, max_y = min(p[1] for p in pts), max(p[1] for p in pts)
+        dx, dy = cx - (min_x + (max_x-min_x)/2), cy - (min_y + (max_y-min_y)/2)
+        g = f'<g transform="translate({dx}, {dy})">'
+        g += f'<line x1="{min_x-50}" y1="{max_y+10}" x2="{max_x+50}" y2="{max_y+10}" stroke="#cbd5e1" stroke-width="3" stroke-dasharray="5,5"/>'
+        for s_idx, e_idx in edges:
+            g += f'<line x1="{pts[s_idx][0]}" y1="{pts[s_idx][1]}" x2="{pts[e_idx][0]}" y2="{pts[e_idx][1]}" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>'
+        g += f'<text x="{min_x}" y="{max_y+50}" fill="#1e293b" font-size="24" font-weight="bold">{title}</text></g>'
+        return g
+
+    svg += draw_view(proj_front, 500, 450, "1. VISTA FRONTAL (ALZADO)")
+    svg += draw_view(proj_side,  500, 1250, "2. VISTA LATERAL (PERFIL)")
+    svg += draw_view(proj_top,   500, 2050, "3. VISTA SUPERIOR (PLANTA)")
+    svg += draw_view(proj_iso,   500, 2850, "4. PROYECCIÓN ISOMÉTRICA (3D)")
+    return svg + '</svg>'
+    
+# ==========================================
+# 2. MOTOR PDF ARQUITECTÓNICO (PARA DESCARGA)
+# ==========================================
+
+def generate_davinci_pdf(L, W, H, material_name, num_levels=0):
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.add_page()
+    
+    pdf.set_fill_color(244, 241, 234)
+    pdf.rect(0, 0, 210, 297, 'F')
+    
+    pdf.set_draw_color(30, 41, 59)
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_font("Courier", "B", 16)
+    
+    pdf.cell(0, 10, "SISTEMA CEM // PLANO ARQUITECTONICO", ln=True, align="C")
+    pdf.set_font("Courier", "", 10)
+    pdf.cell(0, 8, f"PROYECTO: ENSAMBLE 3D | MATERIAL: {material_name}", ln=True, align="C")
+    pdf.cell(0, 6, f"DIMENSIONES GLOBALES: {L} x {W} x {H} mm | {num_levels} NIVELES", ln=True, align="C")
+    pdf.line(20, 32, 190, 32)
+    
     vertices = [(0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,H), (L,0,H), (L,W,H), (0,W,H)]
     edges = [(0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)]
 
+    # Mismos nodos para que el PDF coincida con el SVG web
+    if num_levels > 2:
+        for i in range(1, num_levels - 1):
+            h_level = (H / (num_levels - 1)) * i
+            v_idx = len(vertices)
+            vertices.extend([(0,0,h_level), (L,0,h_level), (L,W,h_level), (0,W,h_level)])
+            edges.extend([(v_idx, v_idx+1), (v_idx+1, v_idx+2), (v_idx+2, v_idx+3), (v_idx+3, v_idx)])
+
     max_dim = max(L, W, H)
     if max_dim == 0: max_dim = 1
-    scale = 600.0 / max_dim 
+    scale = 45.0 / max_dim 
 
     def proj_front(v): return (v[0]*scale, -v[2]*scale)
     def proj_side(v):  return (v[1]*scale, -v[2]*scale)
@@ -326,13 +400,7 @@ def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
         y_iso = -(z + (x + y) * math.sin(rad30))
         return (x_iso, y_iso)
 
-    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 3200" style="background-color:#f4f1ea; font-family:monospace;">'
-    
-    svg += f'<text x="50" y="60" fill="#1e293b" font-size="28" font-weight="bold">SISTEMA CEM // PLANO TÉCNICO</text>'
-    svg += f'<text x="50" y="90" fill="#64748b" font-size="18">PROYECTO: {name} | DIMENSIONES GLOBALES: {L}x{W}x{H} mm</text>'
-    svg += '<line x1="50" y1="110" x2="950" y2="110" stroke="#1e293b" stroke-width="4"/>'
-
-    def draw_view(proj_func, center_x, center_y, title):
+    def draw_view_pdf(proj_func, center_x, center_y, title):
         pts = [proj_func(v) for v in vertices]
         min_x = min(p[0] for p in pts)
         max_x = max(p[0] for p in pts)
@@ -343,111 +411,24 @@ def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
         dx = center_x - (min_x + w/2)
         dy = center_y - (min_y + h/2)
         
-        g = f'<g transform="translate({dx}, {dy})">'
-        g += f'<line x1="{min_x - 50}" y1="{max_y + 10}" x2="{max_x + 50}" y2="{max_y + 10}" stroke="#cbd5e1" stroke-width="3" stroke-dasharray="5,5"/>'
+        pdf.set_draw_color(160, 160, 160)
+        pdf.set_line_width(0.2)
+        pdf.line(dx + min_x - 10, dy + max_y + 5, dx + max_x + 10, dy + max_y + 5)
         
+        pdf.set_draw_color(30, 41, 59)
+        pdf.set_line_width(0.6)
         for start_idx, end_idx in edges:
-            g += f'<line x1="{pts[start_idx][0]}" y1="{pts[start_idx][1]}" x2="{pts[end_idx][0]}" y2="{pts[end_idx][1]}" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>'
-        
-        g += f'<text x="{min_x}" y="{max_y + 50}" fill="#1e293b" font-size="24" font-weight="bold">{title}</text>'
-        g += '</g>'
-        return g
-
-    svg += draw_view(proj_front, 500, 450, "1. VISTA FRONTAL (ALZADO)")
-    svg += draw_view(proj_side,  500, 1250, "2. VISTA LATERAL (PERFIL)")
-    svg += draw_view(proj_top,   500, 2050, "3. VISTA SUPERIOR (PLANTA)")
-    svg += draw_view(proj_iso,   500, 2850, "4. PROYECCIÓN ISOMÉTRICA (3D)")
-    svg += '</svg>'
-    return svg
-    
-# ==========================================
-# 2. MOTOR PDF ARQUITECTÓNICO (PARA DESCARGA)
-# ==========================================
-
-def generate_davinci_pdf(L, W, H, material_name):
-    pdf = FPDF(orientation='L', unit='mm', format='Letter')
-    
-    vertices = [(0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,H), (L,0,H), (L,W,H), (0,W,H)]
-    edges = [(0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)]
-
-    max_dim = max(L, W, H)
-    if max_dim == 0: max_dim = 1
-    # Escala ajustada para llenar media hoja (aprox 110mm de ancho)
-    scale = 110.0 / max_dim 
-
-    def proj_front(v): return (v[0]*scale, -v[2]*scale)
-    def proj_side(v):  return (v[1]*scale, -v[2]*scale)
-    def proj_top(v):   return (v[0]*scale, -v[1]*scale)
-    def proj_iso(v):
-        rad30 = math.radians(30)
-        x, y, z = v[0]*scale, v[1]*scale, v[2]*scale
-        x_iso = (x - y) * math.cos(rad30)
-        y_iso = -(z + (x + y) * math.sin(rad30))
-        return (x_iso, y_iso)
-
-    def build_iso_page(view1_title, view2_title, func1, func2, page_num):
-        pdf.add_page()
-        
-        # Margen Norma ISO/UNE (Izq 25mm, Superior/Inferior/Derecha 10mm)
-        # Formato Letter apaisado: Ancho 279.4, Alto 215.9
-        pdf.set_draw_color(0, 0, 0)
-        pdf.set_line_width(0.5)
-        pdf.rect(25, 10, 244.4, 195.9)
-        
-        # Cajetín (Esquina inferior derecha de la zona útil)
-        cajetin_w = 110
-        cajetin_h = 30
-        cajetin_x = 269.4 - cajetin_w
-        cajetin_y = 205.9 - cajetin_h
-        
-        pdf.rect(cajetin_x, cajetin_y, cajetin_w, cajetin_h)
-        pdf.line(cajetin_x, cajetin_y + 10, cajetin_x + cajetin_w, cajetin_y + 10)
-        pdf.line(cajetin_x, cajetin_y + 20, cajetin_x + cajetin_w, cajetin_y + 20)
-        
-        pdf.set_font("helvetica", "B", 10)
-        pdf.set_xy(cajetin_x, cajetin_y + 2)
-        pdf.cell(cajetin_w, 6, "SISTEMA CEM - PLANO TÉCNICO DE ENSAMBLE", align="C")
-        
-        pdf.set_font("helvetica", "", 9)
-        pdf.set_xy(cajetin_x, cajetin_y + 12)
-        pdf.cell(cajetin_w, 6, f"MAT: {material_name} | DIM GLOBALES: {L}x{W}x{H} mm", align="C")
-        
-        pdf.set_xy(cajetin_x, cajetin_y + 22)
-        pdf.cell(cajetin_w, 6, f"NORMA ISO | HOJA: {page_num}/2", align="C")
-
-        # Función interna para centrar el dibujo en su respectiva media hoja
-        def draw_view(proj_func, center_x, center_y, title):
-            pts = [proj_func(v) for v in vertices]
-            min_x = min(p[0] for p in pts)
-            max_x = max(p[0] for p in pts)
-            min_y = min(p[1] for p in pts)
-            max_y = max(p[1] for p in pts)
+            p1, p2 = pts[start_idx], pts[end_idx]
+            pdf.line(dx + p1[0], dy + p1[1], dx + p2[0], dy + p2[1])
             
-            w, h = max_x - min_x, max_y - min_y
-            dx = center_x - (min_x + w/2)
-            dy = center_y - (min_y + h/2)
-            
-            pdf.set_draw_color(160, 160, 160)
-            pdf.set_line_width(0.2)
-            pdf.line(dx + min_x - 10, dy + max_y + 5, dx + max_x + 10, dy + max_y + 5)
-            
-            pdf.set_draw_color(0, 0, 0)
-            pdf.set_line_width(0.6)
-            for start_idx, end_idx in edges:
-                p1, p2 = pts[start_idx], pts[end_idx]
-                pdf.line(dx + p1[0], dy + p1[1], dx + p2[0], dy + p2[1])
-                
-            pdf.set_font("helvetica", "B", 10)
-            pdf.set_xy(center_x - 40, dy + max_y + 10)
-            pdf.cell(80, 5, title, align="C")
+        pdf.set_xy(center_x - 40, dy + max_y + 8)
+        pdf.set_font("Courier", "B", 10)
+        pdf.cell(80, 10, title, ln=False, align="C")
 
-        # Dibujamos las dos vistas de esta página (Izquierda y Derecha)
-        draw_view(func1, 85, 95, view1_title)
-        draw_view(func2, 205, 80, view2_title) # La vista derecha sube ligeramente para no cruzar el cajetín
-
-    # Compilación de las dos hojas
-    build_iso_page("1. VISTA FRONTAL (ALZADO)", "2. VISTA LATERAL (PERFIL)", proj_front, proj_side, 1)
-    build_iso_page("3. VISTA SUPERIOR (PLANTA)", "4. PROYECCIÓN ISOMÉTRICA", proj_top, proj_iso, 2)
+    draw_view_pdf(proj_front, 105, 75, "1. VISTA FRONTAL (ALZADO)")
+    draw_view_pdf(proj_side, 105, 135, "2. VISTA LATERAL (PERFIL)")
+    draw_view_pdf(proj_top, 105, 195, "3. VISTA SUPERIOR (PLANTA)")
+    draw_view_pdf(proj_iso, 105, 255, "4. PROYECCION ISOMETRICA")
     
     pdf_out = pdf.output(dest='S')
     if isinstance(pdf_out, str):
@@ -560,30 +541,30 @@ async def process_design(req: CadRequest):
     # ==========================================
     # MODO A: ENSAMBLE ARQUITECTÓNICO (DA VINCI)
     # ==========================================
-   if dims_3d:
+if dims_3d:
         L, W, H = dims_3d
         tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
         
-        # 1. Extraemos los entrepaños usando tu nueva función
-        num_entrepanos = extract_components(voice_input)
+        # 1. Extraemos entrepaños dictados y sumamos Base y Techo (+2)
+        num_entrepanos_extraidos = extract_components(voice_input)
+        total_niveles = (num_entrepanos_extraidos + 2) if H > 0 else 0
         
-        blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}")
+        # 2. Generamos Planos 3D (Pantalla y PDF)
+        blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}", num_levels=total_niveles)
+        pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'], num_levels=total_niveles)
         
-        # 2. Matemáticas de Cotización: Esqueleto base + Entrepaños
+        # 3. Matemática de Peso Financiero (Esqueleto + Niveles internos)
         if H > 0:
-            # Cubo/Prisma completo: 4 aristas de largo, 4 de ancho, 4 de altura.
+            # Cubo/Prisma completo (12 aristas)
             total_mm_estimado = (4*L + 4*W + 4*H)
-            
-            # Sumamos el acero necesario para los marcos de cada nivel interno
-            if num_entrepanos > 0:
-                total_mm_estimado += num_entrepanos * ((2*L) + (2*W))
+            if num_entrepanos_extraidos > 0:
+                # Sumamos el perímetro extra de cada nivel intermedio
+                total_mm_estimado += num_entrepanos_extraidos * ((2*L) + (2*W))
         else:
             # Marco plano 2D
             total_mm_estimado = (2*L + 2*W)
             
         peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
-        
-        pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'])
 
         return {
             "status": "success",
@@ -591,12 +572,12 @@ async def process_design(req: CadRequest):
             "is_assembly": True,
             "peso_total_kg": peso_total_kg,
             "pcr_kg": "Análisis de conjunto",
-            "financial_efficiency": f"Incluye {num_entrepanos} entrepaños", # Mostramos el dato aquí
-            "bars_to_buy": "Ver despiece",
+            "financial_efficiency": f"Planos generados: {total_niveles} niveles",
+            "bars_to_buy": "Ver despiece Da Vinci",
             "svg_code": blueprint_svg,
             "pdf_base64": pdf_arq_b64
         }
-
+    
     # ==========================================
     # MODO B: PIEZAS INDIVIDUALES (TU MODELO ACTUAL)
     # ==========================================
