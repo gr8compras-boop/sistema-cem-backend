@@ -279,30 +279,16 @@ def evaluate_safety(pcr):
 # --- RENDERING ENGINES (SVG / PDF) ---
 
 def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
-    """
-    Genera un plano arquitectónico de 4 vistas en formato VERTICAL.
-    Incluye auto-escalado dinámico para soportar dimensiones industriales.
-    """
-    # 1. Vértices del Bounding Box
-    vertices = [
-        (0,0,0), (L,0,0), (L,W,0), (0,W,0), # Base
-        (0,0,H), (L,0,H), (L,W,H), (0,W,H)  # Techo
-    ]
-    # 2. Aristas
-    edges = [
-        (0,1), (1,2), (2,3), (3,0),
-        (4,5), (5,6), (6,7), (7,4),
-        (0,4), (1,5), (2,6), (3,7)
-    ]
+    # 1. Vértices y aristas
+    vertices = [(0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,H), (L,0,H), (L,W,H), (0,W,H)]
+    edges = [(0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)]
 
-    # --- AUTO-ESCALADO DINÁMICO ---
-    # Encontramos la dimensión más grande y forzamos a que mida máximo 600px
+    # Auto-escalado dinámico
     max_dim = max(L, W, H)
     if max_dim == 0: max_dim = 1
     scale = 600.0 / max_dim 
 
-    # --- MATEMÁTICAS DE PROYECCIÓN ---
-    # Nota: En SVG el eje Y crece hacia abajo, por eso multiplicamos por negativos
+    # Matemáticas de proyección (Y crece hacia abajo)
     def proj_front(v): return (v[0]*scale, -v[2]*scale)
     def proj_side(v):  return (v[1]*scale, -v[2]*scale)
     def proj_top(v):   return (v[0]*scale, -v[1]*scale)
@@ -313,15 +299,13 @@ def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
         y_iso = -(z + (x + y) * math.sin(rad30))
         return (x_iso, y_iso)
 
-    # --- LIENZO VERTICAL (1000 de ancho x 3200 de alto) ---
     svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 3200" style="background-color:#f4f1ea; font-family:monospace;">'
-    svg += '<style>.ink { stroke: #1e293b; stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; } .title { fill: #1e293b; font-size: 24px; font-weight: bold; letter-spacing: 2px; } .cota { stroke: #cbd5e1; stroke-width: 2; stroke-dasharray: 5,5; }</style>'
     
-    svg += f'<text x="50" y="60" class="title" font-size="28">SISTEMA CEM // PLANO ARQUITECTÓNICO</text>'
+    # Textos con estilos quemados (Inline)
+    svg += f'<text x="50" y="60" fill="#1e293b" font-size="28" font-weight="bold">SISTEMA CEM // PLANO ARQUITECTÓNICO</text>'
     svg += f'<text x="50" y="90" fill="#64748b" font-size="18">PROYECTO: {name} | DIMENSIONES GLOBALES: {L}x{W}x{H} mm</text>'
     svg += '<line x1="50" y1="110" x2="950" y2="110" stroke="#1e293b" stroke-width="4"/>'
 
-    # Función para dibujar cada vista y centrarla en su "bloque" vertical
     def draw_view(proj_func, center_x, center_y, title):
         pts = [proj_func(v) for v in vertices]
         min_x = min(p[0] for p in pts)
@@ -329,35 +313,105 @@ def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
         min_y = min(p[1] for p in pts)
         max_y = max(p[1] for p in pts)
         
-        # Calcular el ancho y alto real del dibujo ya escalado
         w, h = max_x - min_x, max_y - min_y
-        
-        # Matemáticas para centrar el objeto en las coordenadas que le digamos
         dx = center_x - (min_x + w/2)
         dy = center_y - (min_y + h/2)
         
         g = f'<g transform="translate({dx}, {dy})">'
         
         # Línea de piso
-        g += f'<line x1="{min_x - 50}" y1="{max_y + 10}" x2="{max_x + 50}" y2="{max_y + 10}" class="cota"/>'
+        g += f'<line x1="{min_x - 50}" y1="{max_y + 10}" x2="{max_x + 50}" y2="{max_y + 10}" stroke="#cbd5e1" stroke-width="3" stroke-dasharray="5,5"/>'
         
-        # Dibujar aristas
+        # ⚠️ SOLUCIÓN: Atributos de línea quemados directamente (stroke y stroke-width)
         for start_idx, end_idx in edges:
-            g += f'<line x1="{pts[start_idx][0]}" y1="{pts[start_idx][1]}" x2="{pts[end_idx][0]}" y2="{pts[end_idx][1]}" class="ink"/>'
+            g += f'<line x1="{pts[start_idx][0]}" y1="{pts[start_idx][1]}" x2="{pts[end_idx][0]}" y2="{pts[end_idx][1]}" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>'
         
         # Título de la vista
-        g += f'<text x="{min_x}" y="{max_y + 50}" class="title">{title}</text>'
+        g += f'<text x="{min_x}" y="{max_y + 50}" fill="#1e293b" font-size="24" font-weight="bold">{title}</text>'
         g += '</g>'
         return g
 
-    # Inyectar las 4 vistas en bloque vertical (Aumentando el eje Y de 800 en 800)
     svg += draw_view(proj_front, 500, 450, "1. VISTA FRONTAL (ALZADO)")
     svg += draw_view(proj_side,  500, 1250, "2. VISTA LATERAL (PERFIL)")
     svg += draw_view(proj_top,   500, 2050, "3. VISTA SUPERIOR (PLANTA)")
     svg += draw_view(proj_iso,   500, 2850, "4. PROYECCIÓN ISOMÉTRICA (3D)")
-    
     svg += '</svg>'
     return svg
+
+# ==========================================
+# 2. MOTOR PDF ARQUITECTÓNICO (PARA DESCARGA)
+# ==========================================
+def generate_davinci_pdf(L, W, H, material_name):
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.add_page()
+    
+    pdf.set_fill_color(244, 241, 234)
+    pdf.rect(0, 0, 210, 297, 'F')
+    
+    pdf.set_draw_color(30, 41, 59)
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_font("Courier", "B", 16)
+    
+    pdf.cell(0, 10, "SISTEMA CEM // PLANO ARQUITECTONICO", ln=True, align="C")
+    pdf.set_font("Courier", "", 10)
+    pdf.cell(0, 8, f"PROYECTO: ENSAMBLE 3D | MATERIAL: {material_name}", ln=True, align="C")
+    pdf.cell(0, 6, f"DIMENSIONES GLOBALES: {L} x {W} x {H} mm", ln=True, align="C")
+    pdf.line(20, 32, 190, 32)
+    
+    vertices = [(0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,H), (L,0,H), (L,W,H), (0,W,H)]
+    edges = [(0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4), (0,4), (1,5), (2,6), (3,7)]
+
+    max_dim = max(L, W, H)
+    if max_dim == 0: max_dim = 1
+    scale = 45.0 / max_dim 
+
+    def proj_front(v): return (v[0]*scale, -v[2]*scale)
+    def proj_side(v):  return (v[1]*scale, -v[2]*scale)
+    def proj_top(v):   return (v[0]*scale, -v[1]*scale)
+    def proj_iso(v):
+        rad30 = math.radians(30)
+        x, y, z = v[0]*scale, v[1]*scale, v[2]*scale
+        x_iso = (x - y) * math.cos(rad30)
+        y_iso = -(z + (x + y) * math.sin(rad30))
+        return (x_iso, y_iso)
+
+    def draw_view_pdf(proj_func, center_x, center_y, title):
+        pts = [proj_func(v) for v in vertices]
+        min_x = min(p[0] for p in pts)
+        max_x = max(p[0] for p in pts)
+        min_y = min(p[1] for p in pts)
+        max_y = max(p[1] for p in pts)
+        
+        w, h = max_x - min_x, max_y - min_y
+        dx = center_x - (min_x + w/2)
+        dy = center_y - (min_y + h/2)
+        
+        # Piso en el PDF
+        pdf.set_draw_color(160, 160, 160)
+        pdf.set_line_width(0.2)
+        pdf.line(dx + min_x - 10, dy + max_y + 5, dx + max_x + 10, dy + max_y + 5)
+        
+        # Aristas en el PDF
+        pdf.set_draw_color(30, 41, 59)
+        pdf.set_line_width(0.6)
+        for start_idx, end_idx in edges:
+            p1, p2 = pts[start_idx], pts[end_idx]
+            pdf.line(dx + p1[0], dy + p1[1], dx + p2[0], dy + p2[1])
+            
+        pdf.set_xy(center_x - 40, dy + max_y + 8)
+        pdf.set_font("Courier", "B", 10)
+        pdf.cell(80, 10, title, ln=False, align="C")
+
+    draw_view_pdf(proj_front, 105, 75, "1. VISTA FRONTAL (ALZADO)")
+    draw_view_pdf(proj_side, 105, 135, "2. VISTA LATERAL (PERFIL)")
+    draw_view_pdf(proj_top, 105, 195, "3. VISTA SUPERIOR (PLANTA)")
+    draw_view_pdf(proj_iso, 105, 255, "4. PROYECCION ISOMETRICA")
+    
+    # ⚠️ SOLUCIÓN: Codificación Base64 a prueba de fallos
+    pdf_out = pdf.output(dest='S')
+    if isinstance(pdf_out, str):
+        pdf_out = pdf_out.encode('latin1')
+    return base64.b64encode(pdf_out).decode('utf-8')
     
 def render_svg(geo, p, L, pcr, angle, diag_text, diag_hex):
     s = MM_TO_PX
