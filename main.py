@@ -430,9 +430,7 @@ def generate_davinci_pdf(L, W, H, material_name, num_levels=0):
     draw_view_pdf(proj_top, 105, 195, "3. VISTA SUPERIOR (PLANTA)")
     draw_view_pdf(proj_iso, 105, 255, "4. PROYECCION ISOMETRICA")
     
-    pdf_out = pdf.output(dest='S')
-    if isinstance(pdf_out, str):
-        pdf_out = pdf_out.encode('latin1')
+    pdf_out = pdf.output()
     return base64.b64encode(pdf_out).decode('utf-8')
     
 def render_svg(geo, p, L, pcr, angle, diag_text, diag_hex):
@@ -541,7 +539,7 @@ async def process_design(req: CadRequest):
     # ==========================================
     # MODO A: ENSAMBLE ARQUITECTÓNICO (DA VINCI)
     # ==========================================
-if dims_3d:
+    if dims_3d:
         L, W, H = dims_3d
         tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
         
