@@ -85,13 +85,31 @@ def search_material(text: str):
             max_score, match = score, key
     return CATALOG[match]
 
+def calculate_structural_weight(p, total_length_mm):
+    """
+    Calculates the total weight of the requested steel pieces.
+    Formula: Cross-sectional Area * Total Length * Steel Density
+    """
+    W, H, t = p['width'], p['height'], p['t']
+    
+    # Área transversal en mm^2
+    outer_area = W * H
+    inner_area = (W - 2*t) * (H - 2*t)
+    cross_area = outer_area - inner_area
+    
+    # Densidad del acero al carbono (kg/mm^3)
+    steel_density = 0.00000785
+    
+    total_weight_kg = cross_area * total_length_mm * steel_density
+    return round(total_weight_kg, 2)
+
 def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
     W, H, t = p['width'], p['height'], p['t']
     
     rad = math.radians(angle)
     discount = H * math.tan(rad)
     
-    # Prevent the cut from being longer than the piece itself
+    # Evitar que el descuento trigonométrico sea mayor que la pieza
     if double_miter:
         discount = min(discount, L / 2)
     else:
@@ -99,13 +117,13 @@ def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
     
     manufacturing_measure = L + blade_thickness
     
-    # Generate the points for the SVG drawing
+    # Generar los puntos para el dibujo SVG dependiendo del tipo de corte
     if double_miter:
         elevation = np.array([
             [0, 0], 
             [L, 0], 
             [L - discount, H], 
-            [discount, H]  # Left side angled inward
+            [discount, H]  # Lado izquierdo también en ángulo (Trapecio)
         ])
         short_tip = round(manufacturing_measure - (2 * discount), 1)
     else:
@@ -113,7 +131,7 @@ def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
             [0, 0], 
             [L, 0], 
             [L - discount, H], 
-            [0, H]         # Left side flat (90 degrees)
+            [0, H]         # Lado izquierdo plano (Polígono irregular)
         ])
         short_tip = round(manufacturing_measure - discount, 1)
         
@@ -127,58 +145,9 @@ def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
         'int': int_ptr, 
         'total_w': offset_x + W,
         'long_tip': manufacturing_measure, 
-        'short_tip': short_tip
+        'short_tip': short_tip,
+        'is_double_miter': double_miter
     }
-    
-def extract_cut_list(voice_input):
-    """
-    Translates complex voice commands into a mathematical list of cuts.
-    Includes an NLP filter and strict word boundaries (\b) to prevent digit splitting.
-    """
-    voice_norm = voice_input.lower()
-
-    number_map = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
-                  'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
-                  'ocho': '8', 'nueve': '9', 'diez': '10'}
-    
-    for word, digit in number_map.items():
-        voice_norm = re.sub(rf'\b{word}\b', digit, voice_norm)
-
-    # 🛑 FILTRO NLP: Eliminar datos técnicos para no confundirlos
-    voice_norm = re.sub(r'calibre\s*\d+', '', voice_norm) 
-    voice_norm = re.sub(r'\d+\s*grados', '', voice_norm)  
-    voice_norm = re.sub(r'\d+\s*(?:por|x)\s*\d+', '', voice_norm) 
-
-    # 🛡️ PATRÓN BLINDADO: Usamos \b para evitar que parta los números a la mitad
-    pattern = r'\b(\d+)\b\s*(?:(?:cortes?|piezas?|tramos?)\s*)?(?:de\s*)?\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)'
-    matches = re.findall(pattern, voice_norm)
-    
-    cut_list = []
-    
-    if matches:
-        for qty_str, measure_str, unit in matches:
-            qty = int(qty_str)
-            measure = int(measure_str)
-            
-            if unit.startswith('m') and 'mili' not in unit and unit not in ['mm']: 
-                measure *= 1000
-            elif unit.startswith('c'):
-                measure *= 10
-                
-            cut_list.extend([measure] * qty)
-    else:
-        # Respaldo de seguridad estricto
-        nums = re.findall(r'\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)', voice_norm)
-        if nums:
-            val = int(nums[0][0])
-            u = nums[0][1]
-            if u.startswith('m') and 'mili' not in u and u not in ['mm']: val *= 1000
-            elif u.startswith('c'): val *= 10
-            cut_list.append(val)
-        else:
-            cut_list.append(1000) 
-            
-    return cut_list
 
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
@@ -352,8 +321,10 @@ def generate_1to1_pdf(geo, p, L, pcr, angle, diag_text, diag_rgb, cut_plan):
 async def process_design(req: CadRequest):
     voice_input = req.full_voice.lower()
 
+    # 1. Extracción de Cortes y Ángulos
     cut_list = extract_cut_list(voice_input)
     ref_length = max(cut_list)
+    total_length_mm = sum(cut_list)
 
     match_angle = re.search(r'(\d+)\s*grados', voice_input)
     angle = int(match_angle.group(1)) if match_angle else 0
@@ -361,6 +332,21 @@ async def process_design(req: CadRequest):
     material = search_material(voice_input)
     l_cm = ref_length / 10
     
+    # --- 🤖 MOTOR DE INFERENCIA DE DOBLE INGLETE ---
+    # Parámetros para decisión matemática (Contexto de Ensamblaje)
+    contexto_cerrado = ["mesa", "marco", "ventana", "puerta", "cuadro", "bastidor"]
+    # Parámetros para decisión manual del operario
+    peticion_manual = ["doble inglete", "ambas puntas", "dos puntas", "trapecio"]
+    
+    es_estructura_cerrada = any(palabra in voice_input for palabra in contexto_cerrado)
+    es_peticion_manual = any(palabra in voice_input for palabra in peticion_manual)
+    
+    # Regla de negocio: Solo hay doble inglete si el ángulo es mayor a 0 y cumple el contexto/manual
+    aplicar_doble_inglete = False
+    if angle > 0 and (es_estructura_cerrada or es_peticion_manual):
+        aplicar_doble_inglete = True
+    # -----------------------------------------------
+
     try:
         pcr_calc = (math.pi**2 * STEEL_E * material['I']) / (l_cm**2)
         pcr_round = round(pcr_calc, 2)
@@ -369,7 +355,10 @@ async def process_design(req: CadRequest):
         
     diag_text, diag_rgb, diag_hex = evaluate_safety(pcr_round)
     
-    geo = project_geometry(material, ref_length, angle, blade_thickness=3)
+    # Cálculos Avanzados
+    peso_total_kg = calculate_structural_weight(material, total_length_mm)
+    geo = project_geometry(material, ref_length, angle, blade_thickness=3, double_miter=aplicar_doble_inglete)
+    
     optimization = optimize_1d_cuts(cut_list, standard_length=STANDARD_LENGTH, kerf=3)
     svg_final = render_svg(geo, material, ref_length, pcr_round, angle, diag_text, diag_hex)
     
@@ -390,7 +379,6 @@ async def process_design(req: CadRequest):
     # --- SUPABASE PROFESSIONAL SAVE ---
     if supabase:
         try:
-            # DB Keys remain in Spanish to match your Supabase SQL Schema
             db_record = {
                 "material_nombre": material['name'],
                 "longitud_mm": ref_length,
@@ -405,10 +393,12 @@ async def process_design(req: CadRequest):
         except Exception as e:
             print(f"⚠️ Error saving to Supabase: {e}")
 
+    # Retornamos el peso total para que el panel web pueda mostrarlo en el futuro
     return {
         "status": "success",
         "material": material['name'],
         "pcr_kg": pcr_round,
+        "peso_total_kg": peso_total_kg,
         "pieces_requested": len(cut_list),
         "financial_efficiency": f"{optimization['efficiency_percent']}%",
         "bars_to_buy": optimization['bars_to_buy'],
