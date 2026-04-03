@@ -149,6 +149,63 @@ def project_geometry(p, L, angle=0, blade_thickness=3, double_miter=False):
         'is_double_miter': double_miter
     }
 
+def extract_cut_list(voice_input):
+    """
+    Translates complex voice commands into a mathematical list of cuts.
+    Includes an NLP filter and strict word boundaries (\b) to prevent digit splitting.
+    """
+    voice_norm = voice_input.lower()
+
+    # Mapping Spanish spoken numbers to digits (Kept in Spanish for voice recognition accuracy)
+    number_map = {'un': '1', 'una': '1', 'uno': '1', 'dos': '2', 'tres': '3', 
+                  'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 
+                  'ocho': '8', 'nueve': '9', 'diez': '10'}
+    
+    for word, digit in number_map.items():
+        voice_norm = re.sub(rf'\b{word}\b', digit, voice_norm)
+
+    # 🛑 NLP FILTER: Remove technical data to avoid confusing the length extraction
+    # Removing gauge (calibre) info
+    voice_norm = re.sub(r'calibre\s*\d+', '', voice_norm) 
+    # Removing angles (grados)
+    voice_norm = re.sub(r'\d+\s*grados', '', voice_norm)  
+    # Removing cross-section dimensions (e.g., 4x4 or 4 por 4)
+    voice_norm = re.sub(r'\d+\s*(?:por|x)\s*\d+', '', voice_norm) 
+
+    # 🛡️ BULLETPROOF PATTERN: We use \b to prevent splitting numbers in half
+    # Searching for: [Quantity] cuts/pieces of [Measure] meters/cm/mm
+    pattern = r'\b(\d+)\b\s*(?:(?:cortes?|piezas?|tramos?)\s*)?(?:de\s*)?\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)'
+    matches = re.findall(pattern, voice_norm)
+    
+    cut_list = []
+    
+    if matches:
+        for qty_str, measure_str, unit in matches:
+            qty = int(qty_str)
+            measure = int(measure_str)
+            
+            # Convert everything to millimeters
+            if unit.startswith('m') and 'mili' not in unit and unit not in ['mm']: 
+                measure *= 1000
+            elif unit.startswith('c'):
+                measure *= 10
+                
+            cut_list.extend([measure] * qty)
+    else:
+        # Strict safety fallback: if the exact pattern fails, try to catch at least one measurement
+        nums = re.findall(r'\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)', voice_norm)
+        if nums:
+            val = int(nums[0][0])
+            u = nums[0][1]
+            if u.startswith('m') and 'mili' not in u and u not in ['mm']: val *= 1000
+            elif u.startswith('c'): val *= 10
+            cut_list.append(val)
+        else:
+            # Default safety value
+            cut_list.append(1000) 
+            
+    return cut_list
+
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
