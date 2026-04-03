@@ -261,6 +261,87 @@ def evaluate_safety(pcr):
 
 # --- RENDERING ENGINES (SVG / PDF) ---
 
+def generate_davinci_blueprint(L, W, H, name="ESTRUCTURA_PARAMETRICA"):
+    """
+    Generates a multi-view SVG blueprint (Front, Top, Side, Isometric)
+    using descriptive geometry and mathematical projections.
+    """
+    # 1. Definir los 8 vértices del esqueleto (Bounding Box) en 3D (x, y, z)
+    vertices = [
+        (0,0,0), (L,0,0), (L,W,0), (0,W,0), # Base
+        (0,0,H), (L,0,H), (L,W,H), (0,W,H)  # Techo
+    ]
+    
+    # 2. Definir las líneas que conectan los vértices (Aristas)
+    edges = [
+        (0,1), (1,2), (2,3), (3,0), # Base lines
+        (4,5), (5,6), (6,7), (7,4), # Top lines
+        (0,4), (1,5), (2,6), (3,7)  # Vertical pillars (Patas)
+    ]
+
+    # Constantes estéticas (El estilo Da Vinci x Euler)
+    bg_color = "#f4f1ea" # Color pergamino claro
+    line_color = "#1e293b" # Tinta ferrogálica oscura
+    cota_color = "#b91c1c" # Rojo arquitectónico para medidas
+    font_family = "monospace"
+    
+    scale = 0.2 # Factor de escala para que quepa en el papel
+
+    def proj_front(v): return (v[0]*scale, v[2]*scale)
+    def proj_top(v):   return (v[0]*scale, v[1]*scale)
+    def proj_side(v):  return (v[1]*scale, v[2]*scale)
+    
+    def proj_iso(v):
+        rad30 = math.radians(30)
+        x, y, z = v[0]*scale, v[1]*scale, v[2]*scale
+        x_iso = (x - y) * math.cos(rad30)
+        y_iso = z + (x + y) * math.sin(rad30)
+        return (x_iso, y_iso)
+
+    # --- Constructor de SVG ---
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 800" style="background-color:{bg_color}; font-family:{font_family};">'
+    svg += f'<style>.ink {{ stroke: {line_color}; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }} .dim {{ stroke: {cota_color}; stroke-width: 1; }} .text-dim {{ fill: {cota_color}; font-size: 14px; font-weight: bold; }} .title {{ fill: {line_color}; font-size: 18px; font-weight: bold; letter-spacing: 2px; }}</style>'
+    
+    # Título y Membrete
+    svg += f'<text x="40" y="50" class="title">SISTEMA CEM // PLANO ARQUITECTÓNICO</text>'
+    svg += f'<text x="40" y="70" class="text-dim" style="fill:#64748b;">PROYECTO: {name} | DIMENSIONES GLOBALES: {L}x{W}x{H} mm</text>'
+    svg += f'<line x1="40" y1="85" x2="960" y2="85" class="ink" style="stroke-width:3;"/>'
+
+    def draw_view(proj_func, offset_x, offset_y, title):
+        view_svg = f'<g transform="translate({offset_x}, {offset_y})">'
+        # Dibujar título de la vista
+        view_svg += f'<text x="0" y="-20" class="title" style="font-size:14px;">{title}</text>'
+        
+        # Encontrar límites para dibujar piso y cotas
+        pts = [proj_func(v) for v in vertices]
+        max_x = max(p[0] for p in pts)
+        max_y = max(p[1] for p in pts)
+        min_x = min(p[0] for p in pts)
+        min_y = min(p[1] for p in pts)
+
+        # Dibujar líneas guía (El estilo Da Vinci de boceto)
+        view_svg += f'<line x1="{min_x-20}" y1="{max_y}" x2="{max_x+20}" y2="{max_y}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,5"/>'
+
+        # Dibujar la estructura
+        for start_idx, end_idx in edges:
+            p1, p2 = pts[start_idx], pts[end_idx]
+            # Invertimos el eje Y porque en SVG la Y crece hacia abajo
+            view_svg += f'<line x1="{p1[0]}" y1="{max_y - p1[1]}" x2="{p2[0]}" y2="{max_y - p2[1]}" class="ink"/>'
+        
+        view_svg += '</g>'
+        return view_svg
+
+    # Inyectar las 4 vistas en cuadrantes diferentes
+    svg += draw_view(proj_front, 100, 300, "VISTA FRONTAL (ALZADO)")
+    svg += draw_view(proj_side, 500, 300, "VISTA LATERAL (PERFIL)")
+    svg += draw_view(proj_top, 100, 650, "VISTA SUPERIOR (PLANTA)")
+    
+    # La isometría requiere un ajuste en el centro para verse simétrica
+    svg += draw_view(proj_iso, 650, 600, "PROYECCIÓN ISOMÉTRICA (3D)")
+
+    svg += '</svg>'
+    return svg
+
 def render_svg(geo, p, L, pcr, angle, diag_text, diag_hex):
     s = MM_TO_PX
     H = p['height']
