@@ -259,24 +259,6 @@ def evaluate_safety(pcr):
     else:
         return "PELIGRO DE PANDEO (Riesgo inminente)", (200, 0, 0), "#c80000" 
 
-def calculate_structural_weight(p, total_length_mm):
-    """
-    Calculates the total weight of the requested steel pieces.
-    Formula: Cross-sectional Area * Total Length * Steel Density
-    """
-    W, H, t = p['width'], p['height'], p['t']
-    
-    # Area in mm^2
-    outer_area = W * H
-    inner_area = (W - 2*t) * (H - 2*t)
-    cross_area = outer_area - inner_area
-    
-    # Density of carbon steel (kg/mm^3)
-    steel_density = 0.00000785
-    
-    total_weight_kg = cross_area * total_length_mm * steel_density
-    return round(total_weight_kg, 2)
-
 # --- RENDERING ENGINES (SVG / PDF) ---
 
 def render_svg(geo, p, L, pcr, angle, diag_text, diag_hex):
