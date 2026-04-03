@@ -525,12 +525,13 @@ async def process_design(req: CadRequest):
         L, W, H = dims_3d
         tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
         
-        # Generamos el plano de 4 vistas (Frontal, Lateral, Planta, Isometría)
+        # 1. Generamos el SVG para la pantalla web
         blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}")
         
-        # En modo ensamble, calculamos el peso asumiendo un esqueleto básico
-        # (Patas + Marco superior)
-        # Cubo/Prisma completo: 4 aristas de largo, 4 de ancho, 4 de altura. Si es plano (H=0), solo marco 2D.
+        # 2. ⚠️ LA LÍNEA FALTANTE: Generamos el PDF usando el motor FPDF
+        pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'])
+        
+        # 3. Calculamos el peso asumiendo un esqueleto básico
         total_mm_estimado = (4*L + 4*W + 4*H) if H > 0 else (2*L + 2*W)
         peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
 
@@ -543,7 +544,7 @@ async def process_design(req: CadRequest):
             "financial_efficiency": "N/A (Diseño Global)",
             "bars_to_buy": "Ver despiece",
             "svg_code": blueprint_svg,
-            "pdf_base64": pdf_arq_b64
+            "pdf_base64": pdf_arq_b64  # Ahora la variable sí existe
         }
 
     # ==========================================
