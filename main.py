@@ -363,6 +363,7 @@ async def process_design(req: CadRequest):
     return {
         "status": "success",
         "material": material['name'],
+        "pcr_kg": pcr_round,
         "pieces_requested": len(cut_list),
         "financial_efficiency": f"{optimization['efficiency_percent']}%",
         "bars_to_buy": optimization['bars_to_buy'],
