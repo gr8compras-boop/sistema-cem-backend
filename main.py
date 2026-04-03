@@ -206,6 +206,23 @@ def extract_cut_list(voice_input):
             
     return cut_list
 
+def extract_dimensions_3d(text):
+    """
+    Busca patrones de dimensiones (L x W x H) para activar el modo Arquitectónico.
+    Ejemplo: '120x80x90' o '200 por 100'
+    """
+    # Patrón para detectar 2 o 3 números separados por x, por, y o *
+    pattern = r'\b(\d+)\b\s*(?:x|por|y|\*)\s*\b(\d+)\b(?:\s*(?:x|por|y|\*)\s*\b(\d+)\b)?'
+    match = re.search(pattern, text)
+    
+    if match:
+        # Extraer los valores encontrados
+        vals = [int(v) for v in match.groups() if v is not None]
+        # Si solo dio dos medidas (ej. 100x200), asumimos H=0 (un marco plano)
+        if len(vals) == 2: vals.append(0) 
+        return vals
+    return None
+
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
@@ -440,8 +457,41 @@ def generate_1to1_pdf(geo, p, L, pcr, angle, diag_text, diag_rgb, cut_plan):
 @app.post("/procesar-diseno")
 async def process_design(req: CadRequest):
     voice_input = req.full_voice.lower()
+    material = search_material(voice_input)
+    
+    # --- 🔍 DETECCIÓN DE MODO: ¿ARQUITECTURA O DESPIECE? ---
+    dims_3d = extract_dimensions_3d(voice_input)
 
-    # 1. Extracción de Cortes y Ángulos
+    # ==========================================
+    # MODO A: ENSAMBLE ARQUITECTÓNICO (DA VINCI)
+    # ==========================================
+    if dims_3d:
+        L, W, H = dims_3d
+        tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
+        
+        # Generamos el plano de 4 vistas (Frontal, Lateral, Planta, Isometría)
+        blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}")
+        
+        # En modo ensamble, calculamos el peso asumiendo un esqueleto básico
+        # (Patas + Marco superior)
+        total_mm_estimado = (2*L + 2*W + (4*H if H>0 else 0))
+        peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
+
+        return {
+            "status": "success",
+            "material": material["name"],
+            "is_assembly": True,
+            "peso_total_kg": peso_total_kg,
+            "pcr_kg": "Análisis de conjunto",
+            "financial_efficiency": "N/A (Diseño Global)",
+            "bars_to_buy": "Ver despiece",
+            "svg_code": blueprint_svg,
+            "pdf_base64": "" # Aquí integraremos el PDF Da Vinci en el siguiente paso
+        }
+
+    # ==========================================
+    # MODO B: PIEZAS INDIVIDUALES (TU MODELO ACTUAL)
+    # ==========================================
     cut_list = extract_cut_list(voice_input)
     ref_length = max(cut_list)
     total_length_mm = sum(cut_list)
@@ -449,19 +499,15 @@ async def process_design(req: CadRequest):
     match_angle = re.search(r'(\d+)\s*grados', voice_input)
     angle = int(match_angle.group(1)) if match_angle else 0
 
-    material = search_material(voice_input)
     l_cm = ref_length / 10
     
     # --- 🤖 MOTOR DE INFERENCIA DE DOBLE INGLETE ---
-    # Parámetros para decisión matemática (Contexto de Ensamblaje)
     contexto_cerrado = ["mesa", "marco", "ventana", "puerta", "cuadro", "bastidor"]
-    # Parámetros para decisión manual del operario
     peticion_manual = ["doble inglete", "ambas puntas", "dos puntas", "trapecio"]
     
     es_estructura_cerrada = any(palabra in voice_input for palabra in contexto_cerrado)
     es_peticion_manual = any(palabra in voice_input for palabra in peticion_manual)
     
-    # Regla de negocio: Solo hay doble inglete si el ángulo es mayor a 0 y cumple el contexto/manual
     aplicar_doble_inglete = False
     if angle > 0 and (es_estructura_cerrada or es_peticion_manual):
         aplicar_doble_inglete = True
@@ -475,7 +521,7 @@ async def process_design(req: CadRequest):
         
     diag_text, diag_rgb, diag_hex = evaluate_safety(pcr_round)
     
-    # Cálculos Avanzados
+    # Cálculos Avanzados de Peso y Geometría
     peso_total_kg = calculate_structural_weight(material, total_length_mm)
     geo = project_geometry(material, ref_length, angle, blade_thickness=3, double_miter=aplicar_doble_inglete)
     
@@ -509,14 +555,13 @@ async def process_design(req: CadRequest):
                 "eficiencia_porcentaje": optimization['efficiency_percent']
             }
             supabase.table("historial_planos").insert(db_record).execute()
-            print("💾 Record saved to Supabase successfully.")
         except Exception as e:
-            print(f"⚠️ Error saving to Supabase: {e}")
+            print(f"⚠️ Error Supabase: {e}")
 
-    # Retornamos el peso total para que el panel web pueda mostrarlo en el futuro
     return {
         "status": "success",
         "material": material['name'],
+        "is_assembly": False,
         "pcr_kg": pcr_round,
         "peso_total_kg": peso_total_kg,
         "pieces_requested": len(cut_list),
