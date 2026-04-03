@@ -117,7 +117,7 @@ def project_geometry(p, L, angle=0, blade_thickness=3):
 def extract_cut_list(voice_input):
     """
     Translates complex voice commands into a mathematical list of cuts.
-    Includes an NLP filter to ignore gauges, angles, and profile sizes.
+    Includes an NLP filter and strict word boundaries (\b) to prevent digit splitting.
     """
     voice_norm = voice_input.lower()
 
@@ -128,13 +128,13 @@ def extract_cut_list(voice_input):
     for word, digit in number_map.items():
         voice_norm = re.sub(rf'\b{word}\b', digit, voice_norm)
 
-    # 🛑 FILTRO NLP: Eliminar datos técnicos para que no se confundan con cortes
-    voice_norm = re.sub(r'calibre\s*\d+', '', voice_norm) # Ignora "calibre 14"
-    voice_norm = re.sub(r'\d+\s*grados', '', voice_norm)  # Ignora "45 grados"
-    voice_norm = re.sub(r'\d+\s*(?:por|x)\s*\d+', '', voice_norm) # Ignora "2 por 2" o "2x2"
+    # 🛑 FILTRO NLP: Eliminar datos técnicos para no confundirlos
+    voice_norm = re.sub(r'calibre\s*\d+', '', voice_norm) 
+    voice_norm = re.sub(r'\d+\s*grados', '', voice_norm)  
+    voice_norm = re.sub(r'\d+\s*(?:por|x)\s*\d+', '', voice_norm) 
 
-    # Patrón estricto: Exigimos que haya una unidad (cm, mm, m)
-    pattern = r'(\d+)\s*(?:cortes?|piezas?|tramos?|de)*\s*(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)'
+    # 🛡️ PATRÓN BLINDADO: Usamos \b para evitar que parta los números a la mitad
+    pattern = r'\b(\d+)\b\s*(?:(?:cortes?|piezas?|tramos?)\s*)?(?:de\s*)?\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)'
     matches = re.findall(pattern, voice_norm)
     
     cut_list = []
@@ -151,8 +151,8 @@ def extract_cut_list(voice_input):
                 
             cut_list.extend([measure] * qty)
     else:
-        # Respaldo por si el usuario pide algo muy simple como "un ptr de 2 metros"
-        nums = re.findall(r'(\d+)\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)', voice_norm)
+        # Respaldo de seguridad estricto
+        nums = re.findall(r'\b(\d+)\b\s*(metros?|mts?|cm|centimetros?|mm|milimetros?)', voice_norm)
         if nums:
             val = int(nums[0][0])
             u = nums[0][1]
@@ -160,7 +160,7 @@ def extract_cut_list(voice_input):
             elif u.startswith('c'): val *= 10
             cut_list.append(val)
         else:
-            cut_list.append(1000) # Medida por defecto si no entiende nada
+            cut_list.append(1000) 
             
     return cut_list
 
