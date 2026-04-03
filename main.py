@@ -211,18 +211,20 @@ def extract_dimensions_3d(text):
     Busca patrones de dimensiones (L x W x H) para activar el modo Arquitectónico.
     Ejemplo: '120x80x90' o '200 por 100'
     """
-    # Patrón para detectar 2 o 3 números separados por x, por, y o *
     pattern = r'\b(\d+)\b\s*(?:x|por|y|\*)\s*\b(\d+)\b(?:\s*(?:x|por|y|\*)\s*\b(\d+)\b)?'
     match = re.search(pattern, text)
-    
+
     if match:
-        # Extraer los valores encontrados
         vals = [int(v) for v in match.groups() if v is not None]
-        # Si solo dio dos medidas (ej. 100x200), asumimos H=0 (un marco plano)
+
+        # Filtro de seguridad: Ignorar dimensiones microscópicas que provienen del nombre del perfil (ej. PTR 2x2)
+        if vals[0] <= 10 and vals[1] <= 10:
+            return None
+
         if len(vals) == 2: vals.append(0) 
         return vals
     return None
-
+    
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
@@ -528,7 +530,8 @@ async def process_design(req: CadRequest):
         
         # En modo ensamble, calculamos el peso asumiendo un esqueleto básico
         # (Patas + Marco superior)
-        total_mm_estimado = (2*L + 2*W + (4*H if H>0 else 0))
+        # Cubo/Prisma completo: 4 aristas de largo, 4 de ancho, 4 de altura. Si es plano (H=0), solo marco 2D.
+        total_mm_estimado = (4*L + 4*W + 4*H) if H > 0 else (2*L + 2*W)
         peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
 
         return {
@@ -540,7 +543,7 @@ async def process_design(req: CadRequest):
             "financial_efficiency": "N/A (Diseño Global)",
             "bars_to_buy": "Ver despiece",
             "svg_code": blueprint_svg,
-            "pdf_base64": "" # Aquí integraremos el PDF Da Vinci en el siguiente paso
+            "pdf_base64": pdf_arq_b64
         }
 
     # ==========================================
