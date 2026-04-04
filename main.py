@@ -1,15 +1,19 @@
-import csv
-import requests
-from io import StringIO
-import numpy as np
-import math
+# --- 1. BIBLIOTECA ESTÁNDAR DE PYTHON ---
+import os
 import re
+import csv
+import json
+import math
 import base64
+from io import StringIO
+
+# --- 2. BIBLIOTECAS DE TERCEROS ---
+import numpy as np
+import requests
 from fpdf import FPDF
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import os
+from pydantic import BaseModel
 from supabase import create_client, Client
 
 # --- SUPABASE CONNECTION (WORKSHOP MEMORY) ---
@@ -253,40 +257,118 @@ def extract_components(text):
     
     return int(match.group(1)) if match else 0
 
-def ghost_designer_inference(voice_input):
-    """
-    Motor IA Simbólica: Si no hay medidas, deduce dimensiones físicas, 
-    niveles y selecciona el perfil más seguro para la estructura.
-    """
-    # Si el usuario ya dio dimensiones explícitas, la IA no interviene
-    if extract_dimensions_3d(voice_input):
-        return None 
-        
-    arquetipos = {
-        r'\bbanco\b|\bmesa\b': {
-            "L": 1500, "W": 800, "H": 900, "niveles": 2, 
-            "material_ideal": "ptr 2x2", "nombre": "BANCO_TRABAJO_IA"
-        },
-        r'\bandamio\b': {
-            "L": 2000, "W": 1000, "H": 2000, "niveles": 3, 
-            "material_ideal": "ptr 1.5x1.5", "nombre": "ANDAMIO_ESTRUCTURAL_IA"
-        },
-        r'\brampa\b': {
-            "L": 2000, "W": 600, "H": 500, "niveles": 0, 
-            "material_ideal": "ptr 2x2", "nombre": "RAMPA_CARGA_IA"
-        },
-        r'\bestante\b|\banaquel\b': {
-            "L": 2000, "W": 600, "H": 2400, "niveles": 5, 
-            "material_ideal": "ptr 1.5x1.5", "nombre": "ESTANTE_CARGA_IA"
-        }
+import json
+import os
+import requests
+
+# Variable de entorno para la API de Gemini (Debe agregarse en Render)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+def anthropometric_fallback(voice_input):
+    """Respaldo determinista con variables ISO/ASME incluidas."""
+    voice_input = voice_input.lower()
+    
+    # Base de ingeniería por defecto
+    base = {
+        "factor_seguridad": 1.5,
+        "holgura_soldadura_mm": 1.5,
+        "tolerancia_iso": "ISO 2768-m"
     }
     
-    for patron, datos in arquetipos.items():
-        if re.search(patron, voice_input):
-            return datos
-            
+    if "mesa" in voice_input or "banco" in voice_input:
+        return {**base, "L": 1500, "W": 800, "H": 900, "niveles": 2, "nombre": "BANCO DE TRABAJO", "material_ideal": "ptr 2x2", "carga_estimada_kg": 300}
+    elif "andamio" in voice_input:
+        return {**base, "L": 2000, "W": 1000, "H": 2000, "niveles": 3, "nombre": "ANDAMIO", "material_ideal": "ptr 1.5x1.5", "carga_estimada_kg": 250}
+    elif "rampa" in voice_input:
+        return {**base, "L": 2000, "W": 600, "H": 500, "niveles": 0, "nombre": "RAMPA", "material_ideal": "ptr 2x2", "carga_estimada_kg": 400}
+    elif "estante" in voice_input or "anaquel" in voice_input:
+        return {**base, "L": 2000, "W": 600, "H": 2400, "niveles": 5, "nombre": "ESTANTE", "material_ideal": "ptr 1.5x1.5", "carga_estimada_kg": 500}
     return None
 
+def audit_dimensions(api_data, voice_input):
+    """El auditor verifica proporciones, normas LATAM y existencia de variables ISO."""
+    if not api_data: 
+        return anthropometric_fallback(voice_input)
+    
+    try:
+        voice_lower = voice_input.lower()
+        
+        # Auditoría Ergonométrica
+        if "mesa" in voice_lower or "banco" in voice_lower:
+            if int(api_data.get("H", 0)) > 1100 or int(api_data.get("H", 0)) < 700:
+                api_data["H"] = 900  
+                
+        # Auditoría Logística LATAM (Máximo 6m)
+        if int(api_data.get("L", 0)) > 6000: api_data["L"] = 6000
+        if int(api_data.get("H", 0)) > 6000: api_data["H"] = 6000
+        
+        # Auditoría de Variables de Ingeniería (Inyectar si Gemini las omite)
+        api_data.setdefault("carga_estimada_kg", 250)
+        api_data.setdefault("factor_seguridad", 1.5)
+        api_data.setdefault("holgura_soldadura_mm", 1.5)
+        api_data.setdefault("tolerancia_iso", "ISO 2768-m")
+        
+        return api_data
+    except Exception:
+        return anthropometric_fallback(voice_input)
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+def ask_gemini_ghost_designer(prompt):
+    if not GEMINI_API_KEY: 
+        return None
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    instruccion = (
+        f"Actúa como ingeniero mecánico bajo normas ISO 128 y ASME Y14.5. "
+        f"Requerimiento: '{prompt}'. "
+        f"RESTRICCIÓN DE MANUFACTURA: El sistema CAD actual es estrictamente rectilíneo y ortogonal. "
+        f"Prohibido sugerir perfiles redondos (tubos), curvas o arcos. "
+        f"Utiliza exclusivamente perfiles rectos (PTR, Ángulo, Canal, Viga). "
+        f"Devuelve ÚNICAMENTE un objeto JSON válido, sin formato Markdown, con las claves exactas: "
+        f"'L' (longitud mm, int), 'W' (ancho mm, int), 'H' (alto mm, int), "
+        f"'niveles' (cantidad de estantes o divisiones, int), "
+        f"'nombre' (nombre técnico corto en mayúsculas, string), "
+        f"'material_ideal' (perfil recto comercial, ej. 'ptr 2x2', string), "
+        f"'carga_estimada_kg' (carga viva máxima, int), "
+        f"'factor_seguridad' (float), "
+        f"'holgura_soldadura_mm' (gap de penetración, float), "
+        f"'tolerancia_iso' (clase ISO 2768, string)."
+    )
+    
+    payload = {
+        "contents": [{"parts": [{"text": instruccion}]}],
+        "generationConfig": {"temperature": 0.0} 
+    }
+    
+    try:
+        res = requests.post(url, json=payload, timeout=8)
+        if res.status_code == 200:
+            text_response = res.json()['candidates'][0]['content']['parts'][0]['text']
+            
+            json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+    except Exception as e:
+        print(f"Error API IA: {e}")
+        
+    return None
+
+def ghost_designer_inference(voice_input):
+    """Función principal: Orquesta la IA y el Auditor."""
+    # Si el usuario dictó medidas, no intervenir
+    if extract_dimensions_3d(voice_input): 
+        return None 
+        
+    # 1. Consultar a Gemini
+    api_data = ask_gemini_ghost_designer(voice_input)
+    
+    # 2. Pasar por el filtro de seguridad Antropométrico/LATAM
+    final_data = audit_dimensions(api_data, voice_input)
+    
+    return final_data
+    
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
