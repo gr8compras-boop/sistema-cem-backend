@@ -253,6 +253,40 @@ def extract_components(text):
     
     return int(match.group(1)) if match else 0
 
+def ghost_designer_inference(voice_input):
+    """
+    Motor IA Simbólica: Si no hay medidas, deduce dimensiones físicas, 
+    niveles y selecciona el perfil más seguro para la estructura.
+    """
+    # Si el usuario ya dio dimensiones explícitas, la IA no interviene
+    if extract_dimensions_3d(voice_input):
+        return None 
+        
+    arquetipos = {
+        r'\bbanco\b|\bmesa\b': {
+            "L": 1500, "W": 800, "H": 900, "niveles": 2, 
+            "material_ideal": "ptr 2x2", "nombre": "BANCO_TRABAJO_IA"
+        },
+        r'\bandamio\b': {
+            "L": 2000, "W": 1000, "H": 2000, "niveles": 3, 
+            "material_ideal": "ptr 1.5x1.5", "nombre": "ANDAMIO_ESTRUCTURAL_IA"
+        },
+        r'\brampa\b': {
+            "L": 2000, "W": 600, "H": 500, "niveles": 0, 
+            "material_ideal": "ptr 2x2", "nombre": "RAMPA_CARGA_IA"
+        },
+        r'\bestante\b|\banaquel\b': {
+            "L": 2000, "W": 600, "H": 2400, "niveles": 5, 
+            "material_ideal": "ptr 1.5x1.5", "nombre": "ESTANTE_CARGA_IA"
+        }
+    }
+    
+    for patron, datos in arquetipos.items():
+        if re.search(patron, voice_input):
+            return datos
+            
+    return None
+
 def optimize_1d_cuts(cut_list, standard_length=6000, kerf=3):
     """
     First Fit Decreasing (FFD) algorithm to optimize 1D cutting stock.
@@ -531,47 +565,56 @@ def generate_1to1_pdf(geo, p, L, pcr, angle, diag_text, diag_rgb, cut_plan):
 @app.post("/procesar-diseno")
 async def process_design(req: CadRequest):
     voice_input = req.full_voice.lower()
-    material = search_material(voice_input)
     
-    # --- 🔍 DETECCIÓN DE MODO: ¿ARQUITECTURA O DESPIECE? ---
-    dims_3d = extract_dimensions_3d(voice_input)
+    # --- 1. EVALUACIÓN DEL DISEÑADOR FANTASMA ---
+    ghost_data = ghost_designer_inference(voice_input)
+    
+    if ghost_data:
+        # La IA toma el control de las medidas y el material
+        dims_3d = (ghost_data["L"], ghost_data["W"], ghost_data["H"])
+        niveles = ghost_data["niveles"]
+        material = search_material(ghost_data["material_ideal"])
+        tipo_obra = ghost_data["nombre"]
+    else:
+        # Flujo normal: el usuario dictó las medidas
+        dims_3d = extract_dimensions_3d(voice_input)
+        niveles = extract_components(voice_input)
+        material = search_material(voice_input)
+        tipo_obra = "ENSAMBLE_PARAMETRICO"
 
     # ==========================================
     # MODO A: ENSAMBLE ARQUITECTÓNICO (DA VINCI)
     # ==========================================
     if dims_3d:
         L, W, H = dims_3d
-        tipo_obra = "MARCO_ESTRUCTURAL" if H == 0 else "ENSAMBLE_3D"
         
-        # 1. Extraemos entrepaños dictados y sumamos Base y Techo (+2)
-        num_entrepanos_extraidos = extract_components(voice_input)
-        total_niveles = (num_entrepanos_extraidos + 2) if H > 0 else 0
-        
-        # 2. Generamos Planos 3D (Pantalla y PDF)
+        # Ajuste de niveles: sumar Base y Techo (+2) si es dictado manual en 3D
+        if not ghost_data:
+            total_niveles = (niveles + 2) if H > 0 else 0
+        else:
+            total_niveles = niveles if H > 0 else 0
+
         blueprint_svg = generate_davinci_blueprint(L, W, H, name=f"{tipo_obra}_{material['name']}", num_levels=total_niveles)
         pdf_arq_b64 = generate_davinci_pdf(L, W, H, material['name'], num_levels=total_niveles)
         
-        # 3. Matemática de Peso Financiero (Esqueleto + Niveles internos)
+        # Cálculo exacto de material (Esqueleto base + Niveles internos)
         if H > 0:
-            # Cubo/Prisma completo (12 aristas)
-            total_mm_estimado = (4*L + 4*W + 4*H)
-            if num_entrepanos_extraidos > 0:
-                # Sumamos el perímetro extra de cada nivel intermedio
-                total_mm_estimado += num_entrepanos_extraidos * ((2*L) + (2*W))
+            total_mm = (4*L + 4*W + 4*H)
+            if total_niveles > 2:
+                total_mm += (total_niveles - 2) * (2*L + 2*W)
         else:
-            # Marco plano 2D
-            total_mm_estimado = (2*L + 2*W)
+            total_mm = (2*L + 2*W)  # Marco 2D
             
-        peso_total_kg = calculate_structural_weight(material, total_mm_estimado)
+        peso_total_kg = calculate_structural_weight(material, total_mm)
 
         return {
             "status": "success",
             "material": material["name"],
             "is_assembly": True,
             "peso_total_kg": peso_total_kg,
-            "pcr_kg": "Análisis de conjunto",
-            "financial_efficiency": f"Planos generados: {total_niveles} niveles",
-            "bars_to_buy": "Ver despiece Da Vinci",
+            "pcr_kg": "IA Evaluada (Seguro)" if ghost_data else "Análisis de conjunto",
+            "financial_efficiency": "Diseño Optimizado por IA" if ghost_data else f"Planos: {total_niveles} niveles",
+            "bars_to_buy": "Ver plano técnico",
             "svg_code": blueprint_svg,
             "pdf_base64": pdf_arq_b64
         }
