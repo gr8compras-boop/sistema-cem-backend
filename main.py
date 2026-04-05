@@ -285,6 +285,17 @@ def anthropometric_fallback(voice_input):
         return {**base, "L": 2000, "W": 600, "H": 2400, "niveles": 5, "nombre": "ESTANTE", "material_ideal": "ptr 1.5x1.5", "carga_estimada_kg": 500}
     return None
 
+def safe_int(value, default=0):
+    """Extrae únicamente los dígitos de un valor y lo convierte a entero seguro."""
+    try:
+        if isinstance(value, int): return value
+        if isinstance(value, float): return int(value)
+        # Extrae solo los números si la IA mandó texto (ej. "900 mm" -> 900)
+        numeros = re.findall(r'\d+', str(value))
+        return int(numeros[0]) if numeros else default
+    except Exception:
+        return default
+
 def audit_dimensions(api_data, voice_input):
     """El auditor verifica proporciones, normas LATAM y existencia de variables ISO."""
     if not api_data: 
@@ -293,14 +304,21 @@ def audit_dimensions(api_data, voice_input):
     try:
         voice_lower = voice_input.lower()
         
+        # Saneamiento de datos: Asegurar que las dimensiones sean enteros puros
+        api_data["L"] = safe_int(api_data.get("L", 0))
+        api_data["W"] = safe_int(api_data.get("W", 0))
+        api_data["H"] = safe_int(api_data.get("H", 0))
+        api_data["niveles"] = safe_int(api_data.get("niveles", 0))
+        
         # Auditoría Ergonométrica
         if "mesa" in voice_lower or "banco" in voice_lower:
-            if int(api_data.get("H", 0)) > 1100 or int(api_data.get("H", 0)) < 700:
+            if api_data["H"] > 1100 or api_data["H"] < 700:
                 api_data["H"] = 900  
                 
         # Auditoría Logística LATAM (Máximo 6m)
-        if int(api_data.get("L", 0)) > 6000: api_data["L"] = 6000
-        if int(api_data.get("H", 0)) > 6000: api_data["H"] = 6000
+        if api_data["L"] > 6000: api_data["L"] = 6000
+        if api_data["H"] > 6000: api_data["H"] = 6000
+        if api_data["W"] > 6000: api_data["W"] = 6000
         
         # Auditoría de Variables de Ingeniería (Inyectar si Gemini las omite)
         api_data.setdefault("carga_estimada_kg", 250)
@@ -309,7 +327,8 @@ def audit_dimensions(api_data, voice_input):
         api_data.setdefault("tolerancia_iso", "ISO 2768-m")
         
         return api_data
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Error en Auditoría (Activando Respaldo): {e}")
         return anthropometric_fallback(voice_input)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
